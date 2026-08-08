@@ -1,0 +1,35 @@
+{
+  "name": "stabletrust-pro-wallet-kit-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Stabletrust Pro (Wallet Kit) — confidential treasury dashboard on Turnkey Embedded Wallet Kit + self-custody wallet",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 5176"
+  },
+  "dependencies": {
+    "@fairblock/stabletrust": "2.0.11",
+    "@turnkey/api-key-stamper": "^0.6.8",
+    "@turnkey/crypto": "^2.10.1",
+    "@turnkey/encoding": "^0.6.0",
+    "@turnkey/ethers": "^1.3.32",
+    "@turnkey/http": "^5.0.0",
+    "@turnkey/react-wallet-kit": "^2.3.1",
+    "@turnkey/sdk-browser": "^1.16.0",
+    "buffer": "^6.0.3",
+    "ethers": "^6.16.0",
+    "qrcode": "^1.5.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "puppeteer-core": "^25.4.0",
+    "vite": "^5.4.11",
+    "vite-plugin-top-level-await": "^1.4.5",
+    "vite-plugin-wasm": "^3.3.0"
+  }
+}
