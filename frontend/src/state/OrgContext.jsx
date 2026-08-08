@@ -295,18 +295,6 @@ export function OrgProvider({ children }) {
   // own the slot exclusively (until disconnected), so we skip while one is active.
   const evmAddress = pickEvmAccount(tk.wallets)?.address || null;
 
-  // TEMP diagnostic — shows what wallet-kit exposes after auth. Remove once stable.
-  useEffect(() => {
-    console.log("[wk-debug]", {
-      clientState: tk.clientState,
-      authState: tk.authState,
-      hasSession: !!tk.session,
-      subOrg: tk.session?.organizationId,
-      wallets: (tk.wallets || []).map((w) => ({ source: w?.source, accounts: (w?.accounts || []).map((a) => a?.address) })),
-      pickedEvmAddress: evmAddress,
-    });
-  }, [tk.clientState, tk.authState, tk.session?.token, evmAddress]);
-
   useEffect(() => {
     if (!provRef.current) return;
     if (treasuryRef.current?.kind === "external") return;
@@ -397,7 +385,8 @@ export function OrgProvider({ children }) {
         try {
           // Reflect the signed-in account in the sidebar; don't clobber a user-set org name.
           const cur = await api.getOrg();
-          await api.setOwner({ name: email || "Treasury owner", email: email || undefined, address });
+          // email may be null (passkey has no email) → pass "" to CLEAR any stale email.
+          await api.setOwner({ name: email || "Treasury owner", email: email || "", address });
           if (!cur.org?.name) await api.updateOrg({ name: label });
           await reloadOrg();
         } catch (e) {
@@ -527,6 +516,36 @@ export function OrgProvider({ children }) {
   const connectGoogle = () =>
     run(`Continue with Google`, async () => { await tk.handleGoogleOauth(); }, { silent: true });
 
+  // Inline email OTP — step 1: send the 6-char code. Returns the handle the code step needs.
+  const beginEmailOtp = (email) =>
+    run(`Email a sign-in code to ${email}`, async () =>
+      ({ ...(await tk.initOtp({ otpType: "OTP_TYPE_EMAIL", contact: email })), email }),
+    { silent: true });
+
+  // Inline email OTP — step 2: verify + login-or-signup in one shot (completeOtp). The
+  // auth effect then builds the treasury once wallet-kit flips to Authenticated.
+  const completeEmailOtp = (pending, otpCode) =>
+    run(`Sign in`, async () => {
+      await tk.completeOtp({
+        otpId: pending.otpId,
+        otpCode: String(otpCode).trim(),
+        otpEncryptionTargetBundle: pending.otpEncryptionTargetBundle,
+        contact: pending.email,
+        otpType: "OTP_TYPE_EMAIL",
+      });
+    }, { silent: true });
+
+  // Passkey: log in with an existing passkey; if there's none on this device, create one
+  // with a proper name (so it isn't the default "localhost-<timestamp>").
+  const connectPasskey = () =>
+    run(`Continue with passkey`, async () => {
+      try {
+        await tk.loginWithPasskey();
+      } catch {
+        await tk.signUpWithPasskey({ passkeyDisplayName: "Stabletrust Pro Treasury" });
+      }
+    }, { silent: true });
+
   // Self-custody: the user's own wallet (MetaMask) signs directly — no Turnkey.
   const connectWallet = () =>
     run(`Connect wallet`, async () => {
@@ -553,7 +572,8 @@ export function OrgProvider({ children }) {
       saveTreasuryId(t);
       try {
         const cur = await api.getOrg();
-        await api.setOwner({ name: "Self-custody wallet", address });
+        // Self-custody wallets have no email — clear any stale one from a prior session.
+        await api.setOwner({ name: "Self-custody wallet", email: "", address });
         if (!cur.org?.name) await api.updateOrg({ name: nm });
         await reloadOrg();
       } catch (e) {
@@ -795,6 +815,9 @@ export function OrgProvider({ children }) {
     connectEmbedded,
     connectGoogle,
     connectWallet,
+    beginEmailOtp,
+    completeEmailOtp,
+    connectPasskey,
     connectTreasury: connectEmbedded, // back-compat alias
     addDevicePasskey,
     disconnectTreasury,

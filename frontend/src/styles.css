@@ -192,10 +192,16 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 .btn:hover:not(:disabled) { background: var(--card-2); border-color: var(--line-2); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn.primary { background: linear-gradient(135deg, var(--brand), var(--brand-2)); border: none; color: #fff; }
-.btn.primary:hover:not(:disabled) { filter: brightness(1.06); }
+/* Colored buttons need their OWN hover (higher specificity) — otherwise the generic
+   `.btn:hover` above overrides their background with --card-2, leaving white text on a
+   light surface (invisible on the light theme). */
+.btn.primary:hover:not(:disabled) { background: linear-gradient(135deg, var(--brand), var(--brand-2)); filter: brightness(1.08); }
 .btn.gold { background: linear-gradient(135deg, var(--brand), var(--brand-2)); border: none; color: #fff; }
+.btn.gold:hover:not(:disabled) { background: linear-gradient(135deg, var(--brand), var(--brand-2)); filter: brightness(1.08); }
 .btn.ghost { background: transparent; }
+.btn.ghost:hover:not(:disabled) { background: var(--card-2); }
 .btn.danger { color: var(--err); border-color: rgba(214,69,80,.35); background: var(--err-bg); }
+.btn.danger:hover:not(:disabled) { background: var(--err-bg); border-color: rgba(214,69,80,.55); }
 .btn.sm { padding: 7px 11px; font-size: 12.5px; }
 .btn.block { width: 100%; }
 .btn.big { padding: 14px; font-size: 15px; }

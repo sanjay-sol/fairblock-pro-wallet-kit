@@ -89,7 +89,9 @@ app.post("/api/owner", wrap(async (req, res) => {
   const { name, email, address } = req.body || {};
   d.owner = {
     name: name || d.owner?.name || "Owner",
-    email: email || d.owner?.email || "",
+    // Allow EXPLICIT clearing: passkey/external-wallet logins have no email and pass
+    // "" to wipe a previous email session's address. `undefined` = leave unchanged.
+    email: email !== undefined ? (email || "") : (d.owner?.email || ""),
     address: address || d.owner?.address || null,
   };
   db.save();

@@ -147,7 +147,7 @@ export default function SinglePayout() {
           )}
           {!enough && validAmt && <p className="hint" style={{ marginTop: 12, color: "var(--warn)" }}>⚠ Amount exceeds confidential balance ({fmtAmount(balances.confidential.available, symbol)}). Deposit more on the Dashboard.</p>}
 
-          <button className="btn primary big block" style={{ marginTop: 18 }} disabled={!validAddr || !validAmt || blockedByAcct} onClick={() => setStep(1)}>
+          <button className="btn primary big block" style={{ marginTop: 18 }} disabled={!validAddr || !validAmt || !enough || blockedByAcct} onClick={() => setStep(1)}>
             Continue <Icon.chevR size={16} />
           </button>
         </div>

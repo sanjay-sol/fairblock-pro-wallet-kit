@@ -29,6 +29,10 @@ const turnkeyConfig = {
   organizationId: import.meta.env.VITE_TURNKEY_ORG_ID,
   authProxyConfigId: import.meta.env.VITE_TURNKEY_AUTH_PROXY_CONFIG_ID,
   auth: {
+    // 12 hours. IMPORTANT: with the managed Auth Proxy, session length is controlled by the
+    // Turnkey DASHBOARD (Wallet Kit config — currently 900s). Setting it here has NO effect
+    // until Mani updates `sessionExpirationSeconds` in the dashboard. Kept for documentation.
+    sessionExpirationSeconds: "43200",
     oauthConfig: {
       oauthRedirectUri,
       ...(googleClientId ? { google: { primaryClientId: googleClientId } } : {}),
