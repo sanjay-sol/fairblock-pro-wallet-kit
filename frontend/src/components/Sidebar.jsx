@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { NavLink } from "react-router-dom";
 import { Icon } from "./Icons.jsx";
 import { useOrg } from "../state/OrgContext.jsx";
@@ -19,6 +20,19 @@ export default function Sidebar({ collapsed, onToggle }) {
   const { org, owner, txs, treasury, disconnectTreasury } = useOrg();
   const pendingCount = txs.filter((t) => t.status === "pending").length;
 
+  // Glide the hover highlight to whatever nav item the cursor is over; fade it out when
+  // the cursor leaves the nav (the active item keeps its own tint). The eased transition
+  // is what makes it feel a touch slower than the cursor.
+  const indRef = useRef(null);
+  const moveHover = (el) => {
+    const ind = indRef.current;
+    if (!ind || !el) return;
+    ind.style.transform = `translateY(${el.offsetTop}px)`;
+    ind.style.height = `${el.offsetHeight}px`;
+    ind.style.opacity = "1";
+  };
+  const hideHover = () => { if (indRef.current) indRef.current.style.opacity = "0"; };
+
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -29,11 +43,12 @@ export default function Sidebar({ collapsed, onToggle }) {
         </div>
       </div>
 
-      <nav className="nav">
+      <nav className="nav" onMouseLeave={hideHover}>
+        <span className="nav-hover" ref={indRef} aria-hidden="true" />
         {NAV.map((n) => {
           const I = Icon[n.icon];
           return (
-            <NavLink key={n.to} to={n.to} end={n.end} title={n.label}>
+            <NavLink key={n.to} to={n.to} end={n.end} title={n.label} onMouseEnter={(e) => moveHover(e.currentTarget)}>
               <span className="ic"><I size={17} /></span>
               <span className="lbl">{n.label}</span>
               {n.to === "/pending" && pendingCount > 0 && (

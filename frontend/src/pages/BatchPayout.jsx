@@ -184,8 +184,7 @@ export default function BatchPayout() {
     <div className="page">
       <div className="page-head">
         <h1>Batch Payout</h1>
-        <p>Pay many recipients from your treasury. Add them manually or from a CSV (or both). One confidential
-          transfer per recipient — each is its own proof + tx.</p>
+        <p>Pay many recipients from your treasury. Add them manually or from a CSV (or both).</p>
       </div>
 
       {view === "build" && (
@@ -206,7 +205,7 @@ export default function BatchPayout() {
               </div>
               <div className={`choice ${delivery === "direct" ? "sel" : ""}`} onClick={() => changeDelivery("direct")}>
                 <div className="ct"><span className="radio" /> Direct to wallet</div>
-                <div className="cd">Funds land in each recipient's public wallet; amounts public. Works to any address.</div>
+                <div className="cd">Funds land in each recipient's public wallet; amounts public.</div>
               </div>
             </div>
           </div>
@@ -214,7 +213,7 @@ export default function BatchPayout() {
           {/* add recipients */}
           <div className="card">
             <h3>Add recipients</h3>
-            <p className="csub">Add one at a time, or import a CSV — you can keep adding after importing.</p>
+            <br></br>
             <div className="flex wrap" style={{ gap: 8, alignItems: "flex-start" }}>
               <input style={{ flex: "2 1 260px" }} placeholder="0x… recipient address" value={manual.address}
                 onChange={(e) => setManual((m) => ({ ...m, address: e.target.value }))}
@@ -237,7 +236,7 @@ export default function BatchPayout() {
               <input ref={fileRef} type="file" accept=".csv,text/csv" hidden onChange={onFile} />
             </div>
             <p className="hint" style={{ marginTop: 8 }}>
-              CSV columns: <span className="mono">address, amount, token, label</span> — <b>token</b> is a symbol
+              CSV columns: <span className="mono">address, amount, token, label</span> - <b>token</b> is a symbol
               (e.g. {symbol}) and defaults to the selected token if omitted. Only supported tokens work.
             </p>
           </div>

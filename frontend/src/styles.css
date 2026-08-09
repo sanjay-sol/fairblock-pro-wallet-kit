@@ -391,4 +391,87 @@ tbody tr:hover { background: var(--card-2); }
 .barlist { display: flex; flex-direction: column; gap: 12px; }
 .barrow .bl { display: flex; justify-content: space-between; font-size: 12.5px; margin-bottom: 5px; }
 .bartrack { height: 8px; background: var(--card-3); border-radius: 999px; overflow: hidden; }
-.barfill { height: 100%; background: linear-gradient(90deg, var(--brand), var(--brand-2)); border-radius: 999px; }
+.barfill { height: 100%; background: linear-gradient(90deg, var(--brand), var(--brand-2)); border-radius: 999px; transition: width .5s cubic-bezier(.22,.61,.36,1); }
+
+/* ============================================================================
+   Polish — hover shadows, smooth transitions, animated empties, page entrance.
+   Appended so the cascade lets these refine the base styles above.
+   ============================================================================ */
+
+/* page entrance — a gentle fade-up on each route change */
+.page { animation: pageIn .34s cubic-bezier(.22,.61,.36,1) both; }
+@keyframes pageIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+/* cards + stat cards: soft lift/shadow on hover */
+.card { transition: box-shadow .22s ease, border-color .22s ease, transform .22s ease; }
+.card:hover { box-shadow: var(--shadow); border-color: var(--line-2); }
+/* clickable card-buttons (dashboard shortcuts): a bare <button> shrinks to its content
+   (unequal widths in a grid) and resets its color to a dark UA default (invisible titles
+   in dark mode). Force full-width + inherit the readable ink color. */
+button.card { width: 100%; color: var(--ink); text-align: left; }
+button.card:hover { transform: translateY(-2px); }
+.stat { transition: box-shadow .22s ease, border-color .22s ease, transform .22s ease; }
+.stat:hover { box-shadow: var(--shadow); border-color: var(--line-2); transform: translateY(-2px); }
+
+/* buttons: subtle shadow on hover + tactile press */
+.btn { transition: background .16s ease, border-color .16s ease, opacity .16s ease, box-shadow .16s ease, transform .12s ease; }
+.btn:hover:not(:disabled) { box-shadow: var(--shadow-card); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn.primary:hover:not(:disabled) { box-shadow: 0 8px 20px var(--brand-bg); }
+.btn.gold:hover:not(:disabled) { box-shadow: 0 8px 20px var(--brand-bg); }
+
+/* sidebar: a highlight that glides to the cursor (a touch slower — feels smooth).
+   The JS in Sidebar.jsx moves `.nav-hover` to the hovered item; it rests behind the
+   items (z-index 0) so the active item's own tint still shows on top. */
+.nav { position: relative; }
+.nav-hover {
+  position: absolute; left: 0; right: 0; top: 0; height: 0; opacity: 0; z-index: 0;
+  border-radius: var(--radius-sm); background: var(--card-2); pointer-events: none;
+  transition: transform .30s cubic-bezier(.34,.8,.28,1), height .30s cubic-bezier(.34,.8,.28,1), opacity .2s ease;
+}
+.nav a { position: relative; z-index: 1; transition: color .22s ease; }
+.nav a:hover { background: transparent; }         /* the gliding highlight handles hover bg */
+.nav a .ic { transition: transform .22s ease; }
+.nav a:hover .ic { transform: translateX(1px); }
+
+/* smaller interactive bits get a whisper of shadow/lift too */
+.iconbtn { transition: color .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
+.iconbtn:hover { box-shadow: var(--shadow-card); transform: translateY(-1px); }
+.walletchip { transition: border-color .16s ease, box-shadow .16s ease; }
+.walletchip:hover { border-color: var(--line-2); box-shadow: var(--shadow-card); }
+.chainpill { transition: border-color .16s ease, box-shadow .16s ease; }
+.chainpill:hover { box-shadow: var(--shadow-card); }
+.choice { transition: border-color .18s ease, background .18s ease, box-shadow .18s ease, transform .18s ease; }
+.choice:hover { box-shadow: var(--shadow-card); transform: translateY(-1px); }
+.faucet-link { transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
+.faucet-link:hover { box-shadow: var(--shadow-card); transform: translateY(-1px); }
+.netmenu .netitem { transition: background .14s ease; }
+tbody tr { transition: background .14s ease; }
+.badge { transition: background .16s ease, color .16s ease; }
+.link { transition: color .14s ease; }
+
+/* animated empty-state orb: a floating icon with emanating rings */
+.empty-orb { position: relative; width: 68px; height: 68px; margin: 0 auto; display: grid; place-items: center; }
+.empty-orb .empty-ico {
+  position: relative; z-index: 1; width: 54px; height: 54px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 24px; color: var(--brand-soft);
+  background: radial-gradient(120% 120% at 30% 20%, var(--brand-bg), transparent 70%);
+  border: 1px solid var(--line-2); animation: floaty 3.4s ease-in-out infinite;
+}
+.empty-orb .ring {
+  position: absolute; inset: 6px; border-radius: 50%; border: 1px solid var(--brand);
+  opacity: 0; animation: emptyPulse 2.8s ease-out infinite;
+}
+.empty-orb .ring:nth-child(2) { animation-delay: .9s; }
+.empty-orb .ring:nth-child(3) { animation-delay: 1.8s; }
+@keyframes emptyPulse { 0% { transform: scale(.7); opacity: .45; } 70% { opacity: .06; } 100% { transform: scale(1.65); opacity: 0; } }
+@keyframes floaty { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+
+/* toasts glide in a bit more expressively */
+.toast { animation: toastIn .24s cubic-bezier(.22,.61,.36,1); }
+@keyframes toastIn { from { transform: translateY(10px) scale(.98); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* honor reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+}

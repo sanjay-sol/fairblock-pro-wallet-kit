@@ -1,10 +1,11 @@
 import { useOrg } from "../state/OrgContext.jsx";
+import { Icon } from "../components/Icons.jsx";
 import { Stat, EmptyState } from "../components/ui.jsx";
 import { fmtUsd, fmtAmount } from "../lib/format.js";
 
 function BarList({ data, symbol }) {
   const entries = Object.entries(data || {});
-  if (!entries.length) return <EmptyState icon="📈" title="No data yet" />;
+  if (!entries.length) return <EmptyState icon={<Icon.coin size={24} />} title="No data yet" />;
   const max = Math.max(...entries.map(([, v]) => v)) || 1;
   return (
     <div className="barlist">
@@ -20,7 +21,7 @@ function BarList({ data, symbol }) {
 
 function MonthlyChart({ monthly, symbol }) {
   const entries = Object.entries(monthly || {}).sort(([a], [b]) => (a < b ? -1 : 1));
-  if (!entries.length) return <EmptyState icon="📊" title="No payout volume yet">Confidential payouts will chart here.</EmptyState>;
+  if (!entries.length) return <EmptyState icon={<Icon.analytics size={24} />} title="No payout volume yet">Confidential payouts will chart here.</EmptyState>;
   const max = Math.max(...entries.map(([, v]) => v)) || 1;
   return (
     <div style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 200, paddingTop: 12 }}>

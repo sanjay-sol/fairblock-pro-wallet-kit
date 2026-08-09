@@ -71,7 +71,7 @@ export default function Settings() {
           <div className="between" style={{ marginTop: 14, gap: 12, flexWrap: "wrap" }}>
             <p className="csub" style={{ margin: 0, maxWidth: 460 }}>
               You're signed in on this device via <b>email</b>. Add this device's Touch/Face&nbsp;ID so next
-              time you can unlock in one tap — no email. The same wallet gains an extra passkey; nothing moves.
+              time you can unlock in one tap - no email. The same wallet gains an extra passkey; nothing moves.
             </p>
             <button className="btn primary" disabled={busy || !sessionActive}
               title={sessionActive ? "Register this device's passkey" : "Create a session first"}

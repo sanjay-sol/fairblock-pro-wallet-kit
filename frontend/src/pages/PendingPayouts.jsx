@@ -19,7 +19,7 @@ export default function PendingPayouts() {
       )}
 
       {pending.length === 0 ? (
-        <div className="card"><EmptyState icon="✅" title="No pending payouts">Requests submitted by team members will appear here for your review and approval.</EmptyState></div>
+        <div className="card"><EmptyState icon={<Icon.pending size={24} />} title="No pending payouts">Requests submitted by team members will appear here for your review and approval.</EmptyState></div>
       ) : (
         <div className="table-wrap">
           <table>

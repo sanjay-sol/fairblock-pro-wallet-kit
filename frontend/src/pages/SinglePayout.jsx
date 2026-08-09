@@ -126,7 +126,7 @@ export default function SinglePayout() {
             </div>
             <div className={`choice ${delivery === "direct" ? "sel" : ""}`} onClick={() => setDelivery("direct")}>
               <div className="ct"><span className="radio" /> Direct to wallet</div>
-              <div className="cd">Funds arrive directly in the recipient's public wallet. <b>Amount becomes public.</b> Works to any address — no account needed.</div>
+              <div className="cd">Funds arrive directly in the recipient's public wallet. <b>Amount becomes public.</b></div>
             </div>
           </div>
 

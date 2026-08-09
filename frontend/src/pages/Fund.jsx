@@ -16,7 +16,7 @@ export default function Fund() {
       <div className="page-head">
         <h1>Fund wallet</h1>
         <p>
-          Your treasury is a fresh wallet — it starts empty. Fund it on <b>{network?.name}</b> with a little
+          Your treasury is a fresh wallet - it starts empty. Fund it on <b>{network?.name}</b> with a little
           native gas and some {symbol}, then deposit into your confidential balance. The address below is the
           same on every EVM network, but only funds on the selected network are usable here.
         </p>
@@ -56,7 +56,7 @@ export default function Fund() {
       {/* step 1 — gas */}
       <div className="card">
         <h3>1 · Get gas ({nativeSymbol})</h3>
-        <p className="csub">Every transaction needs a little native {nativeSymbol} for gas. Grab some from a public faucet:</p>
+        <p className="csub">Every transaction needs a little native {nativeSymbol} for gas.</p>
         {gasFaucets.length ? (
           <div className="faucet-list">
             {gasFaucets.map((f) => (

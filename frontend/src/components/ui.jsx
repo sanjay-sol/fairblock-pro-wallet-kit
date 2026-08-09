@@ -70,12 +70,19 @@ export function Stepper({ steps, current }) {
   );
 }
 
+// `icon` may be an Icon element (preferred) or an emoji string — either renders inside
+// the animated orb (floating icon + emanating rings).
 export function EmptyState({ icon = "📭", title, children }) {
   return (
     <div className="empty">
-      <div className="ico">{icon}</div>
-      <div className="big">{title}</div>
-      {children && <div className="hint" style={{ maxWidth: 420, margin: "0 auto" }}>{children}</div>}
+      <div className="empty-orb">
+        <span className="ring" aria-hidden="true" />
+        <span className="ring" aria-hidden="true" />
+        <span className="ring" aria-hidden="true" />
+        <span className="empty-ico">{icon}</span>
+      </div>
+      {title && <div className="big">{title}</div>}
+      {children && <div className="hint" style={{ maxWidth: 380, margin: "4px auto 0" }}>{children}</div>}
     </div>
   );
 }

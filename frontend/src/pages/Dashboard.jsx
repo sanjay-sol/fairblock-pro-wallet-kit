@@ -29,7 +29,7 @@ export default function Dashboard() {
           <div style={{ flex: 1, minWidth: 220 }}>
             <b>Fund your treasury to get started</b>
             <p className="csub" style={{ margin: "4px 0 0" }}>
-              {!hasGas ? `Add ${nativeSymbol} for gas` : `Add ${symbol}`} on {network?.name} — from a faucet or another wallet.
+              {!hasGas ? `Add ${nativeSymbol} for gas` : `Add ${symbol}`} on {network?.name} - from a faucet or another wallet.
             </p>
           </div>
           <button className="btn primary" onClick={() => nav("/fund")}><Icon.receive size={15} /> Fund wallet</button>
@@ -78,7 +78,7 @@ export default function Dashboard() {
         {/* deposit to confidential */}
         <div className="card">
           <h3>Load confidential balance</h3>
-          <p className="csub">Move public {symbol} into the treasury's confidential balance — the pool payouts are drawn from.</p>
+          <p className="csub">Move public {symbol} into the treasury's confidential balance - the pool payouts are drawn from.</p>
           <label className="fld">Token</label>
           <TokenSelect />
           <label className="fld" style={{ marginTop: 12 }}>Amount ({symbol})</label>
@@ -123,7 +123,7 @@ export default function Dashboard() {
         </button>
         <button className="card" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => nav("/batch")}>
           <div className="between"><h3><Icon.batch size={16} /> &nbsp;Batch Payout</h3><Icon.chevR size={16} /></div>
-          <p className="csub" style={{ margin: "8px 0 0" }}>Pay many recipients from a CSV — payroll, vendors, contractors.</p>
+          <p className="csub" style={{ margin: "8px 0 0" }}>Pay many recipients at once.</p>
         </button>
       </div>
 
@@ -134,7 +134,7 @@ export default function Dashboard() {
           <button className="btn sm ghost" onClick={() => nav("/history")}>View all <Icon.chevR size={14} /></button>
         </div>
         {recent.length === 0 ? (
-          <EmptyState icon="🗒️" title="No activity yet">Your deposits and payouts will show up here.</EmptyState>
+          <EmptyState icon={<Icon.history size={24} />} title="No activity yet">Your deposits and payouts will show up here.</EmptyState>
         ) : (
           <div className="table-wrap">
             <table>

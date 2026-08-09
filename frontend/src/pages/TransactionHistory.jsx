@@ -60,7 +60,7 @@ export default function TransactionHistory() {
       </div>
 
       {filtered.length === 0 ? (
-        <div className="card"><EmptyState icon="🧾" title="No activity yet">Payouts, deposits, and withdrawals will appear here.</EmptyState></div>
+        <div className="card"><EmptyState icon={<Icon.history size={24} />} title="No activity yet">Payouts, deposits, and withdrawals will appear here.</EmptyState></div>
       ) : (
         <div className="table-wrap">
           <table>

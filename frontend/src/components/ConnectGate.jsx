@@ -63,12 +63,13 @@ export default function ConnectGate() {
             {!pending ? (
               <>
                 <label className="fld">Continue with email</label>
-                <div className="flex" style={{ gap: 8 }}>
+                <div className="flex" style={{ gap: 8, alignItems: "stretch" }}>
                   <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com"
                     type="email" style={{ flex: 1 }}
                     onKeyDown={(e) => e.key === "Enter" && email.trim() && sendCode()} />
-                  <button className="btn primary" disabled={busy || loading || !email.trim()} onClick={sendCode}>
-                    <Icon.mail size={16} /> Send code
+                  <button className="btn primary" style={{ flex: "none", padding: "0 16px" }}
+                    disabled={busy || loading || !email.trim()} onClick={sendCode} title="Email me a sign-in code">
+                    {busy ? <span className="spinner" style={{ margin: 0 }} /> : <Icon.chevR size={18} />}
                   </button>
                 </div>
               </>
@@ -107,10 +108,10 @@ export default function ConnectGate() {
             <button className="btn big block" disabled={busy} onClick={guard(connectWallet)}>
               <Icon.wallet size={16} /> Connect wallet (self-custody)
             </button>
-            <p className="hint" style={{ marginTop: 10 }}>
+            {/* <p className="hint" style={{ marginTop: 10 }}>
               Sign with your own MetaMask — Turnkey and Stabletrust hold nothing. Best for
               crypto-native treasuries.
-            </p>
+            </p> */}
           </div>
         )}
 
