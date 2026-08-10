@@ -10,7 +10,7 @@ import {
   saveSelectedChainId,
   explorerTx,
 } from "../networks.js";
-import { api } from "../lib/api.js";
+import { api, setApiContext } from "../lib/api.js";
 import { short } from "../lib/format.js";
 import {
   makeWalletKitSigner,
@@ -139,24 +139,35 @@ export function OrgProvider({ children }) {
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === "error" ? 7000 : 4200);
   }, []);
 
-  // ---- reloads --------------------------------------------------------------
-  const reloadOrg = useCallback(async () => {
-    const { org, owner } = await api.getOrg();
-    setOrg(org);
-    setOwner(owner);
+  // Point the API client at the current org (x-org-id) + caller (x-caller-email) so every
+  // request is scoped + RBAC-checked. Called synchronously wherever a treasury is built.
+  const applyApiContext = useCallback((t) => {
+    setApiContext({ orgId: t?.subOrgId || t?.address || null, callerEmail: t?.email || null });
   }, []);
-  const reloadTeam = useCallback(async () => setTeam(await api.getTeam()), []);
-  const reloadRecipients = useCallback(async () => setRecipients(await api.recipients()), []);
+
+  // ---- reloads (defensive: a missing org context must never crash the boot) --
+  const reloadOrg = useCallback(async () => {
+    try { const { org, owner } = await api.getOrg(); setOrg(org); setOwner(owner); }
+    catch (e) { console.warn("reloadOrg:", e?.message || e); }
+  }, []);
+  const reloadTeam = useCallback(async () => {
+    try { setTeam(await api.getTeam()); } catch (e) { console.warn("reloadTeam:", e?.message || e); }
+  }, []);
+  const reloadRecipients = useCallback(async () => {
+    try { setRecipients(await api.recipients()); } catch (e) { console.warn("reloadRecipients:", e?.message || e); }
+  }, []);
   const reloadTxs = useCallback(async () => {
-    const raw = await api.getTransactions({ subOrgId: treasuryRef.current?.subOrgId || treasuryRef.current?.address });
-    const elg = vaultRef.current?.elgamal || {};
-    const dec = await Promise.all(
-      raw.map(async (t) => ({
-        ...t,
-        amount: t.amountEnc ? await decryptAmount(t.amountEnc, elg[t.chainId]) : (t.amount ?? null),
-      })),
-    );
-    setTxs(dec);
+    try {
+      const raw = await api.getTransactions({});
+      const elg = vaultRef.current?.elgamal || {};
+      const dec = await Promise.all(
+        raw.map(async (t) => ({
+          ...t,
+          amount: t.amountEnc ? await decryptAmount(t.amountEnc, elg[t.chainId]) : (t.amount ?? null),
+        })),
+      );
+      setTxs(dec);
+    } catch (e) { console.warn("reloadTxs:", e?.message || e); }
   }, []);
   const reloadAnalytics = useCallback(async () => {}, []);
 
@@ -214,6 +225,7 @@ export function OrgProvider({ children }) {
     saveTreasuryId(null);
     setTreasury(null);
     treasuryRef.current = null;
+    applyApiContext(null);
     lastAuthedSubOrg.current = null;
     wipeVault();
     setBalances(EMPTY_BAL);
@@ -270,12 +282,17 @@ export function OrgProvider({ children }) {
             };
             setTreasury(t);
             treasuryRef.current = t;
+            applyApiContext(t);
             refreshBalances(t);
           } else {
             saveTreasuryId(null); // wallet not available/authorized anymore
           }
         }
-        await Promise.all([reloadOrg(), reloadTeam(), reloadRecipients(), reloadTxs()]);
+        // Org-scoped data loads only once we actually have an org (a restored external
+        // treasury here; Turnkey treasuries load via the auth effect once the session resolves).
+        if (treasuryRef.current) {
+          await Promise.all([reloadOrg(), reloadTeam(), reloadRecipients(), reloadTxs()]);
+        }
         setReady(true);
       } catch (e) {
         setBootError(e.message || String(e));
@@ -355,6 +372,7 @@ export function OrgProvider({ children }) {
         const t = { ...treasuryRef.current, signer, account, userId, sessionExpiresAt: expiresAt };
         setTreasury(t);
         treasuryRef.current = t;
+        applyApiContext(t);
         return;
       }
 
@@ -379,6 +397,7 @@ export function OrgProvider({ children }) {
       setTreasury(t);
       treasuryRef.current = t;
       saveTreasuryId(t);
+      applyApiContext(t); // set x-org-id BEFORE any org-scoped call below
 
       if (lastAuthedSubOrg.current !== subOrgId) {
         lastAuthedSubOrg.current = subOrgId;
@@ -393,7 +412,7 @@ export function OrgProvider({ children }) {
           console.warn("owner sync failed:", e?.message || e);
         }
       }
-      await Promise.all([refreshBalances(t), reloadTxs()]);
+      await Promise.all([refreshBalances(t), reloadTxs(), reloadTeam(), reloadRecipients()]);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tk.authState, tk.clientState, tk.session?.token, evmAddress, chainId]);
@@ -570,6 +589,7 @@ export function OrgProvider({ children }) {
       setTreasury(t);
       treasuryRef.current = t;
       saveTreasuryId(t);
+      applyApiContext(t);
       try {
         const cur = await api.getOrg();
         // Self-custody wallets have no email — clear any stale one from a prior session.
@@ -579,9 +599,19 @@ export function OrgProvider({ children }) {
       } catch (e) {
         console.warn("owner sync failed:", e?.message || e);
       }
-      await Promise.all([refreshBalances(t), reloadTxs()]);
+      await Promise.all([refreshBalances(t), reloadTxs(), reloadTeam(), reloadRecipients()]);
       return t;
     });
+
+  // Accept a team invitation as the currently signed-in user (their email must match the
+  // invite). Used by the /accept page after the invitee signs in.
+  const acceptInvite = ({ inviteId, token }) =>
+    run(`Accept invitation`, async () => {
+      const t = treasuryRef.current;
+      if (!t) throw new Error("Sign in first, then accept the invitation.");
+      if (!t.email) throw new Error("Sign in with the invited email address to accept.");
+      return await api.acceptInvite({ inviteId, token, email: t.email, name: t.label, subOrgId: t.subOrgId || t.address });
+    }, { silent: true });
 
   // Add THIS device's passkey to the signed-in embedded wallet (one-tap next time).
   const addDevicePasskey = () =>
@@ -818,6 +848,7 @@ export function OrgProvider({ children }) {
     beginEmailOtp,
     completeEmailOtp,
     connectPasskey,
+    acceptInvite,
     connectTreasury: connectEmbedded, // back-compat alias
     addDevicePasskey,
     disconnectTreasury,

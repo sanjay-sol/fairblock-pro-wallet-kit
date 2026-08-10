@@ -23,10 +23,17 @@ export default function Team() {
     if (!email.trim()) return;
     setSaving(true);
     try {
-      await api.addMember({ name: name.trim(), email: email.trim(), role });
+      const res = await api.invite({ name: name.trim(), email: email.trim().toLowerCase(), role });
       await reloadTeam();
       setName(""); setEmail(""); setRole("member"); setShow(false);
-      toast("Member invited ✓", "ok");
+      if (res.emailed === "smtp" || res.emailed === "sendgrid") {
+        toast(`Invitation emailed to ${email.trim()} ✓`, "ok");
+      } else if (res.acceptUrl) {
+        try { await navigator.clipboard.writeText(res.acceptUrl); } catch { /* ignore */ }
+        toast("Invite created (email not configured) — accept link copied to clipboard", "info");
+      } else {
+        toast("Invitation created ✓", "ok");
+      }
     } catch (e) { toast(e.message, "error"); } finally { setSaving(false); }
   }
   async function changeRole(id, r) { await api.updateMember(id, { role: r }); await reloadTeam(); }
@@ -70,7 +77,7 @@ export default function Team() {
       <div className="card">
         <h3 style={{ marginBottom: 14 }}>Team members</h3>
         {team.length === 0 ? (
-          <EmptyState icon="👥" title="No team members yet">Invite people to your organization so they can collaborate with you.</EmptyState>
+          <EmptyState icon={<Icon.team size={24} />} title="No team members yet">Invite people to your organization so they can collaborate with you.</EmptyState>
         ) : (
           <div className="table-wrap">
             <table>
@@ -81,7 +88,7 @@ export default function Team() {
                     <td><div className="flex"><div className="avatar" style={{ width: 30, height: 30, fontSize: 12, borderRadius: "50%", background: "var(--card-3)", color: "var(--ink)", display: "grid", placeItems: "center", fontWeight: 700 }}>{initialsOf(m.name)}</div>{m.name}</div></td>
                     <td className="muted">{m.email}</td>
                     <td><select value={m.role} onChange={(e) => changeRole(m.id, e.target.value)} style={{ maxWidth: 130, padding: "6px 28px 6px 10px" }}>{ROLES.map((r) => <option key={r.v} value={r.v}>{r.label}</option>)}</select></td>
-                    <td><span className="badge warn">{m.status}</span></td>
+                    <td><span className={`badge ${m.status === "active" ? "ok" : "warn"}`}>{m.status}</span></td>
                     <td className="muted nowrap">{fmtDate(m.invitedAt)}</td>
                     <td className="right"><button className="btn sm danger" onClick={() => remove(m.id)}><Icon.trash size={13} /></button></td>
                   </tr>

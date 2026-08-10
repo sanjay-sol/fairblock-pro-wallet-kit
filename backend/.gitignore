@@ -1,3 +1,6 @@
 node_modules/
 .env
 data/db.json
+# Firebase Admin service-account key — SECRET, never commit
+serviceAccount.json
+serviceAccount*.json

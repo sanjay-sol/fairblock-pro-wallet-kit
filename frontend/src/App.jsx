@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, useLocation } from "react-router-dom";
 import { useOrg } from "./state/OrgContext.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import Topbar from "./components/Topbar.jsx";
 import Toasts from "./components/Toasts.jsx";
 import ConnectGate from "./components/ConnectGate.jsx";
+import AcceptInvite from "./pages/AcceptInvite.jsx";
 import { TopProgressBar } from "./components/ui.jsx";
 
 import Dashboard from "./pages/Dashboard.jsx";
@@ -19,6 +20,7 @@ import Settings from "./pages/Settings.jsx";
 
 export default function App() {
   const { ready, bootError, treasury } = useOrg();
+  const { pathname } = useLocation();
   const [collapsed, setCollapsed] = useState(false);
 
   if (bootError) {
@@ -37,6 +39,9 @@ export default function App() {
   if (!ready) {
     return <div className="gate"><div className="box"><img className="logo-lg" src="/Logo.png" alt="" /><p>Loading…</p></div></div>;
   }
+
+  // The invite-accept page is reachable whether or not you're signed in.
+  if (pathname === "/accept") return (<><TopProgressBar /><AcceptInvite /><Toasts /></>);
 
   if (!treasury) return (<><TopProgressBar /><ConnectGate /><Toasts /></>);
 
