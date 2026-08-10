@@ -205,7 +205,10 @@ app.post("/api/transactions", wrap(async (req, res) => {
     recipientLabel: b.recipientLabel || null,
     token: b.token || null,
     tokenSymbol: b.tokenSymbol || "USDC",
-    amount: b.amount != null ? String(b.amount) : null,   // amounts are client-encrypted (amountEnc)
+    // Confidentiality is server-ENFORCED here: we NEVER persist a plaintext amount, even if a
+    // client sends one. Only the client-side-encrypted `amountEnc` is stored; the app decrypts
+    // it locally with the treasury's ElGamal key. Firestore never sees a cleartext figure.
+    amount: null,
     amountEnc: b.amountEnc || null,
     delivery: b.delivery || "confidential",
     network: b.network || null,
