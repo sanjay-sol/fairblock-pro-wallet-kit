@@ -7,6 +7,7 @@ import { initialsOf } from "../lib/format.js";
 const NAV = [
   { to: "/", label: "Dashboard", icon: "dashboard", end: true },
   { to: "/single", label: "Single Payout", icon: "single" },
+  { to: "/batch", label: "Batch Payout", icon: "batch" },
   { to: "/fund", label: "Fund Wallet", icon: "receive" },
   { to: "/analytics", label: "Analytics", icon: "analytics" },
   { to: "/pending", label: "Pending Payouts", icon: "pending" },

@@ -9,6 +9,7 @@ import { TopProgressBar } from "./components/ui.jsx";
 
 import Dashboard from "./pages/Dashboard.jsx";
 import SinglePayout from "./pages/SinglePayout.jsx";
+import BatchPayout from "./pages/BatchPayout.jsx";
 import Fund from "./pages/Fund.jsx";
 import Analytics from "./pages/Analytics.jsx";
 import PendingPayouts from "./pages/PendingPayouts.jsx";
@@ -41,6 +42,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/single" element={<SinglePayout />} />
+          <Route path="/batch" element={<BatchPayout />} />
           <Route path="/fund" element={<Fund />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/pending" element={<PendingPayouts />} />

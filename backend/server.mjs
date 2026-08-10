@@ -167,6 +167,7 @@ app.post("/api/payouts", wrap(async (req, res) => {
   const completed = !b.activityId && !!b.txHash; // solo (threshold 1) settles synchronously client-side
   const payout = await store.addPayout(c.subOrgId, {
     activityId: b.activityId || null, fingerprint: b.fingerprint || null,
+    nonce: b.nonce != null ? Number(b.nonce) : null, batchId: b.batchId || null,
     kind: b.kind || "transfer", recipient: b.recipient || null, recipientLabel: b.recipientLabel || null,
     amountEnc: b.amountEnc || null, tokenSymbol: b.tokenSymbol || "USDC", token: b.token || null, delivery: b.delivery || "confidential",
     note: b.note || null, status: completed ? "completed" : "pending", txHash: b.txHash || null, explorerUrl: b.explorerUrl || null,
@@ -175,23 +176,13 @@ app.post("/api/payouts", wrap(async (req, res) => {
   res.json(payout);
 }));
 
-// Per-process lock: many dashboards poll GET /api/payouts every few seconds, so several
-// requests can try to broadcast the SAME completed activity at once. Only one may broadcast.
-const broadcasting = new Set();
+// ── payout execution: approvals → capture signed tx → broadcast in NONCE ORDER → finalize ──
+const executing = new Set(); // at most one ordered executor per treasury at a time
 
-// Enrich a payout with the Turnkey activity's live approval state; broadcast ONCE when the
-// threshold is met; then finalize its status from the on-chain receipt. Statuses:
-//   pending → (approvals accumulate) → submitted (broadcast, mining) → completed | failed
+// Update a payout's live approval state; when its Turnkey activity completes, CAPTURE the
+// signed tx (but don't broadcast here — the ordered executor does that so nonces stay sequential).
 async function enrichPayout(treasury, members, p) {
-  if (!["pending", "submitted"].includes(p.status) || !p.activityId) return p;
-
-  // Already broadcast → just read the receipt (idempotent; never re-broadcast).
-  if (p.status === "submitted" && p.txHash) {
-    const rc = await provider.getTransactionReceipt(p.txHash).catch(() => null);
-    if (!rc) return p; // still mining
-    return store.updatePayout(treasury.subOrgId, p.id, rc.status === 1 ? { status: "completed" } : { status: "failed", error: "reverted on-chain" });
-  }
-
+  if (p.status !== "pending" || !p.activityId) return p;
   let activity;
   try { activity = await getActivity({ rootKey: treasury.rootKey, activityId: p.activityId }); } catch { return p; }
   const byUser = Object.fromEntries(members.filter((m) => m.userId).map((m) => [m.userId, m]));
@@ -199,38 +190,72 @@ async function enrichPayout(treasury, members, p) {
     .filter((v) => !v.selection || v.selection === "VOTE_SELECTION_APPROVED")
     .map((v) => (v.user?.userEmail || byUser[v.userId]?.email || "").toLowerCase()).filter(Boolean))];
   const patch = { approvals, tkStatus: activity?.status, fingerprint: activity?.fingerprint || p.fingerprint || null };
-
-  if (activity?.status === "ACTIVITY_STATUS_COMPLETED") {
+  if (activity?.status === "ACTIVITY_STATUS_COMPLETED" && !p.signedTx) {
     const signed = activity.result?.signTransactionResult?.signedTransaction;
-    if (signed && !p.txHash && !broadcasting.has(p.id)) {
-      broadcasting.add(p.id);
-      try {
-        const hex = signed.startsWith("0x") ? signed : `0x${signed}`;
-        const hash = ethers.Transaction.from(hex).hash; // deterministic — same no matter who broadcasts
-        patch.status = "submitted"; patch.txHash = hash; patch.explorerUrl = explorerTx(hash);
-        try {
-          await provider.broadcastTransaction(hex);
-          console.log(`[payout ${p.id}] broadcast ${hash}`);
-        } catch (e) {
-          const m = String(e?.message || "").toLowerCase();
-          // "already known / nonce too low / replacement" = the tx is already out there → NOT a failure.
-          if (!/already known|nonce too low|replacement|already imported|known transaction|transaction already exists/.test(m)) {
-            patch.status = "failed"; patch.error = e?.message?.slice(0, 180); delete patch.txHash; delete patch.explorerUrl;
-          }
-        }
-      } finally { broadcasting.delete(p.id); }
-    }
+    if (signed) patch.signedTx = signed.startsWith("0x") ? signed : `0x${signed}`;
   } else if (activity?.status === "ACTIVITY_STATUS_REJECTED" || activity?.status === "ACTIVITY_STATUS_FAILED") {
     patch.status = "failed"; patch.error = "rejected/failed at Turnkey";
   }
   return store.updatePayout(treasury.subOrgId, p.id, patch);
 }
 
+// Broadcast approved-and-signed payouts STRICTLY in nonce order (a batch = K consecutive
+// nonces). A gap — e.g. a rejected/failed payout — pauses the queue until it's filled.
+// Idempotent: "already known / nonce too low" just means the tx is already out there.
+async function executeReadyPayouts(treasury, list) {
+  const ready = list.filter((p) => p.status === "pending" && p.signedTx && !p.txHash && p.nonce != null).sort((a, b) => a.nonce - b.nonce);
+  if (!ready.length || executing.has(treasury.subOrgId)) return;
+  executing.add(treasury.subOrgId);
+  try {
+    let expected = await provider.getTransactionCount(treasury.address, "pending");
+    for (const p of ready) {
+      if (p.nonce < expected) continue;   // already in the mempool / mined
+      if (p.nonce > expected) break;       // a lower nonce isn't ready yet — hold the queue in order
+      const hash = ethers.Transaction.from(p.signedTx).hash;
+      try {
+        await provider.broadcastTransaction(p.signedTx);
+        console.log(`[payout ${p.id}] broadcast nonce=${p.nonce} ${hash}`);
+      } catch (e) {
+        const m = String(e?.message || "").toLowerCase();
+        if (!/already known|nonce too low|replacement|already imported|known transaction|transaction already exists/.test(m)) {
+          await store.updatePayout(treasury.subOrgId, p.id, { status: "failed", error: e?.message?.slice(0, 180) });
+          break; // couldn't broadcast this nonce → stop (the rest would gap)
+        }
+      }
+      await store.updatePayout(treasury.subOrgId, p.id, { status: "submitted", txHash: hash, explorerUrl: explorerTx(hash) });
+      expected++;
+    }
+  } finally { executing.delete(treasury.subOrgId); }
+}
+
+// Finalize broadcast payouts from their on-chain receipt.
+async function finalizeSubmitted(treasury, list) {
+  await Promise.all(list.filter((p) => p.status === "submitted" && p.txHash).map(async (p) => {
+    const rc = await provider.getTransactionReceipt(p.txHash).catch(() => null);
+    if (rc) await store.updatePayout(treasury.subOrgId, p.id, rc.status === 1 ? { status: "completed", error: null } : { status: "failed", error: "reverted on-chain" });
+  }));
+}
+
+// Reserve the next nonce(s) for a proposal: max(on-chain pending, highest reserved-in-DB + 1).
+app.get("/api/nonce", wrap(async (req, res) => {
+  const c = await ctx(req, res, "admin"); if (!c) return;
+  const count = Math.max(1, Math.min(Number(req.query.count) || 1, 200));
+  const [onchain, list] = await Promise.all([provider.getTransactionCount(c.treasury.address, "pending"), store.listPayouts(c.subOrgId)]);
+  const reserved = list.filter((p) => ["pending", "submitted"].includes(p.status) && p.nonce != null).map((p) => Number(p.nonce));
+  const base = Math.max(onchain, reserved.length ? Math.max(...reserved) + 1 : 0);
+  res.json({ base, count });
+}));
+
 app.get("/api/payouts", wrap(async (req, res) => {
   const c = await ctx(req, res); if (!c) return;
-  const [raw, members] = await Promise.all([store.listPayouts(c.subOrgId), store.listMembers(c.subOrgId)]);
-  const enriched = await Promise.all(raw.map((p) => enrichPayout({ ...c.treasury, subOrgId: c.subOrgId }, members, p)));
-  res.json(enriched.map(({ unsignedTx, ...rest }) => rest)); // don't ship the raw unsigned tx to the list
+  const treasury = { ...c.treasury, subOrgId: c.subOrgId };
+  const members = await store.listMembers(c.subOrgId);
+  await Promise.all((await store.listPayouts(c.subOrgId)).map((p) => enrichPayout(treasury, members, p)));
+  const afterEnrich = await store.listPayouts(c.subOrgId);
+  await finalizeSubmitted(treasury, afterEnrich);
+  await executeReadyPayouts(treasury, afterEnrich);
+  const final = await store.listPayouts(c.subOrgId);
+  res.json(final.map(({ signedTx, unsignedTx, ...rest }) => rest)); // don't ship raw signed/unsigned tx
 }));
 
 app.post("/api/payouts/:id/rejected", wrap(async (req, res) => {

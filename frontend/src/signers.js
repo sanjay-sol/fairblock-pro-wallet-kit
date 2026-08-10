@@ -22,6 +22,13 @@ export class PendingConsensusError extends Error {
 let _lastPending = null;
 export const takeLastPending = () => { const p = _lastPending; _lastPending = null; return p; };
 
+// Batch/queue support: force a specific nonce onto the next signed tx. K batch payouts must get
+// consecutive nonces (N, N+1, …) even though none is broadcast yet — otherwise the SDK populates
+// the SAME on-chain nonce for all of them. Set before each op, clear after.
+let _nonceOverride = null;
+export const setNonceOverride = (n) => { _nonceOverride = n == null ? null : Number(n); };
+export const clearNonceOverride = () => { _nonceOverride = null; };
+
 export class ConsensusSigner extends AbstractSigner {
   constructor(provider) {
     super(provider);
@@ -50,6 +57,7 @@ export class ConsensusSigner extends AbstractSigner {
 
   async signTransaction(transaction) {
     const { from, to, ...txn } = copyRequest(transaction);
+    if (_nonceOverride != null) txn.nonce = _nonceOverride; // consecutive nonces for a batch
     const resolved = await resolveProperties({ to: transaction.to ? resolveAddress(transaction.to, this.provider) : undefined });
     const tx = Transaction.from({ ...txn, ...(resolved.to ? { to: resolved.to } : {}) });
     const r = await getClient().signTransaction({

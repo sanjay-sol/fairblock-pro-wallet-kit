@@ -3,7 +3,7 @@ import { ethers } from "ethers";
 import { loadBackendConfig, buildConfig, explorerTx } from "../config.js";
 import { api, setApiContext } from "../lib/api.js";
 import { newTargetKey, establishSession, restoreSession, clearSession, sessionActive, getSession, patchSession } from "../lib/session.js";
-import { makeConsensusSigner, takeLastPending, approveActivity as tkApprove } from "../signers.js";
+import { makeConsensusSigner, takeLastPending, approveActivity as tkApprove, setNonceOverride, clearNonceOverride } from "../signers.js";
 import { saveVault, loadVault, clearVault } from "../vault.js";
 import { encryptAmount, decryptAmount } from "../metaCrypto.js";
 import { computeAnalytics } from "../lib/analytics.js";
@@ -194,25 +194,70 @@ export function OrgProvider({ children }) {
   };
 
   // Record a payout: solo (threshold 1 → completed synchronously) or pending (needs approvals).
-  async function recordPayout({ kind, recipient, recipientLabel, amount, delivery, note }, outcome) {
+  async function recordPayout({ kind, recipient, recipientLabel, amount, delivery, note, nonce, batchId }, outcome) {
     const tok = tokenRef.current;
     const amountEnc = await encryptAmount(amount, treasuryRef.current.elgamalPriv);
-    const base = { kind, recipient, recipientLabel: recipientLabel || null, amountEnc, tokenSymbol: tok.symbol, token: tok.address, delivery, note: note || null };
+    const base = { kind, recipient, recipientLabel: recipientLabel || null, amountEnc, tokenSymbol: tok.symbol, token: tok.address, delivery, note: note || null, nonce: nonce ?? null, batchId: batchId ?? null };
     if (outcome.pending) return api.proposePayout({ ...base, activityId: outcome.activityId, fingerprint: outcome.fingerprint });
     return api.proposePayout({ ...base, status: "completed", txHash: outcome.txHash, explorerUrl: explorerTx(outcome.txHash) });
   }
 
   const proposePayout = ({ recipient, amount, delivery = "confidential", recipientLabel, note }) =>
     run(`Pay ${amount} ${tokenRef.current?.symbol || ""}`, async () => {
-      if (delivery === "confidential") { const ok = await isActivated(recipient); if (!ok) throw new Error("recipient has no confidential account — ask them to onboard, or use Direct-to-wallet"); }
+      if (delivery === "direct" && (treasuryRef.current?.threshold || 1) > 1) throw new Error("Direct-to-wallet isn't supported under multi-sig yet (it needs 2 txns) — use Confidential Settlement.");
+      if (delivery === "confidential") { const ok = await isActivated(recipient); if (!ok) throw new Error("recipient has no confidential account — ask them to onboard first"); }
+      const { base } = await api.nonce(1); // reserve this payout's nonce
       let txHash = null, pending = null;
+      setNonceOverride(base);
       try { txHash = await executeOnChain({ recipient, amount, delivery }); }
       catch (e) { pending = takeLastPending(); if (!pending) throw e; }
+      finally { clearNonceOverride(); }
       const kind = delivery === "direct" ? "withdraw" : "transfer";
-      if (pending) { await recordPayout({ kind, recipient, recipientLabel, amount, delivery, note }, { pending: true, ...pending }); await reloadPayouts(); return { pending: true }; }
-      await recordPayout({ kind, recipient, recipientLabel, amount, delivery, note }, { txHash });
+      if (pending) { await recordPayout({ kind, recipient, recipientLabel, amount, delivery, note, nonce: base }, { pending: true, ...pending }); await reloadPayouts(); return { pending: true }; }
+      await recordPayout({ kind, recipient, recipientLabel, amount, delivery, note, nonce: base }, { txHash });
       await Promise.all([refreshBalances(), reloadPayouts()]);
       return { completed: true, txHash };
+    }, { silent: true });
+
+  // Batch: propose (or, at threshold 1, send) K payouts with CONSECUTIVE nonces. A failed/skipped
+  // row does NOT consume its nonce (so the executor queue never gaps). Best-effort per row.
+  const runBatch = async (rows, delivery, onProgress) => {
+    const batchId = `batch_${Date.now().toString(36)}`;
+    const { base } = await api.nonce(rows.length);
+    let nextNonce = base;
+    const results = [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      try {
+        if (delivery === "direct" && (treasuryRef.current?.threshold || 1) > 1) throw new Error("Direct-to-wallet isn't supported under multi-sig yet — use Confidential");
+        if (delivery === "confidential") { const ok = await isActivated(row.address); if (!ok) throw new Error("recipient has no confidential account"); }
+        let txHash = null, pending = null;
+        setNonceOverride(nextNonce);
+        try { txHash = await executeOnChain({ recipient: row.address, amount: row.amount, delivery, token: row.token }); }
+        catch (e) { pending = takeLastPending(); if (!pending) throw e; }
+        finally { clearNonceOverride(); }
+        await recordPayout({ kind: delivery === "direct" ? "withdraw" : "transfer", recipient: row.address, recipientLabel: row.label || null, amount: row.amount, delivery, nonce: nextNonce, batchId }, pending ? { pending: true, ...pending } : { txHash });
+        const status = pending ? "proposed" : "completed";
+        results.push({ ...row, status, txHash });
+        onProgress?.(i, row, { status, txHash });
+        nextNonce++; // only advance on a recorded payout — failures reuse the nonce (no gap)
+      } catch (e) {
+        results.push({ ...row, status: "failed", error: e.message });
+        onProgress?.(i, row, { status: "failed", error: e.message });
+      }
+    }
+    await Promise.all([refreshBalances(), reloadPayouts()]);
+    return { batchId, results };
+  };
+
+  // Cast this admin's approval across every payout in a batch (or any set) in one action.
+  const approveBatch = (payoutsToApprove) =>
+    run(`Approve ${payoutsToApprove.length} payout${payoutsToApprove.length === 1 ? "" : "s"}`, async () => {
+      const targets = payoutsToApprove.filter((p) => p.activityId && p.status === "pending");
+      const res = await Promise.allSettled(targets.map((p) => tkApprove(p.activityId)));
+      await reloadPayouts();
+      const failed = res.filter((r) => r.status === "rejected").length;
+      if (failed) throw new Error(`${failed} of ${targets.length} approvals failed — tap again to retry the rest`);
     }, { silent: true });
 
   const depositToConfidential = (amount) =>
@@ -256,7 +301,7 @@ export function OrgProvider({ children }) {
     // auth
     createTreasury, beginOtp, completeOtp, logout,
     // treasury ops
-    activateTreasury, refreshBalances, depositToConfidential, proposePayout, approvePayout, rejectPayout,
+    activateTreasury, refreshBalances, depositToConfidential, proposePayout, runBatch, approveBatch, approvePayout, rejectPayout,
     // members
     addMember, removeMember, setThreshold, saveName, addRecipient, removeRecipient, isActivated,
     // reloads
