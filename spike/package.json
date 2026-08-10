@@ -1,0 +1,18 @@
+{
+  "name": "cosign-spike",
+  "private": true,
+  "type": "module",
+  "version": "0.0.1",
+  "description": "Throwaway spike: validate Turnkey 2-of-3 consensus + read/spend policy split for confidential multi-sig treasuries. Secrets live only in .env (gitignored).",
+  "scripts": {
+    "whoami": "node whoami.mjs",
+    "spike": "node spike-2of3.mjs"
+  },
+  "dependencies": {
+    "@fairblock/stabletrust": "^2.0.11",
+    "@turnkey/crypto": "^2.11.1",
+    "@turnkey/sdk-server": "^8.1.0",
+    "dotenv": "^17.4.2",
+    "ethers": "^6.17.0"
+  }
+}

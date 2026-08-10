@@ -1,272 +1,257 @@
-// fairblock-pro-wallet-kit/backend/server.mjs
+// ─────────────────────────────────────────────────────────────────────────────
+// Model B backend — co-managed (multi-sig) confidential treasuries.
+//   • Turnkey management + OTP relay via the parent API key (turnkey.mjs).
+//   • Firestore persistence (store.mjs) + one-email-one-treasury invariant.
+//   • Payout consensus: clients PROPOSE (submit a Turnkey signing activity) + APPROVE
+//     (stamp with their OTP session) directly against Turnkey. This server records the
+//     payout, reports live approval status, and EXECUTES (broadcasts the signed tx) once
+//     the activity reaches the threshold — the authoritative gate is Turnkey's policy.
 //
-// Multi-tenant application backend for Stabletrust Pro (Wallet Kit).
-//   • Persistence: Firestore (DB_BACKEND=firestore) or in-memory fallback — see store.mjs.
-//   • Real team invites: creates an invite (role + token) and emails an accept link — mailer.mjs.
-//   • RBAC: every request is scoped to an org via the `x-org-id` header; mutating routes check
-//     the caller's role (owner > admin > member > viewer).
-//
-// Auth model note (POC): the caller asserts its identity via headers (x-org-id = the caller's
-// own Turnkey sub-org, x-caller-email). That's fine for a demo; production should verify the
-// Turnkey session server-side before trusting these. NO signing keys live here.
-
+// Caller identity (POC): x-org-id = treasury subOrgId, x-caller-email = the signed-in
+// admin. Production should verify the Turnkey session server-side before trusting these.
+// ─────────────────────────────────────────────────────────────────────────────
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { store, initStore, acceptInvite, sha256 } from "./store.mjs";
+import { ethers } from "ethers";
+import { store, initStore, storeMode } from "./store.mjs";
+import { initTurnkey, createTreasury, addMember, removeMember, setThreshold, otpInit, otpVerify, getActivity } from "./turnkey.mjs";
 import { initMailer, sendInvite } from "./mailer.mjs";
 
 const {
   PORT = "8792",
   APP_NAME = "Stabletrust Pro",
   APP_URL = "http://localhost:5176",
-  SDK_API_BASE_URL = "",
   FRONTEND_ORIGIN = "http://localhost:5176",
+  CHAIN_ID = "84532",
+  RPC_URL = "https://sepolia.base.org",
+  DIAMOND_ADDRESS = "0x31Ce72e1D2A499140a95c19accE7bCF5E0664689",
+  USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
 } = process.env;
 
-const ALLOWED_ORIGINS = FRONTEND_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
+const chainId = Number(CHAIN_ID);
+const provider = new ethers.JsonRpcProvider(RPC_URL, chainId);
+const explorerTx = (h) => (h ? `https://sepolia.basescan.org/tx/${h}` : null);
+const ALLOWED = FRONTEND_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
 
 const dbMode = initStore();
+const tkEnabled = initTurnkey();
 const mail = initMailer();
 
 const app = express();
-app.use(
-  cors({
-    origin(origin, cb) {
-      if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-      return cb(new Error(`origin ${origin} not allowed`));
-    },
-    allowedHeaders: ["content-type", "x-org-id", "x-caller-email"],
-  }),
-);
-app.use(express.json({ limit: "4mb" }));
+app.use(cors({ origin: (o, cb) => (!o || ALLOWED.includes(o)) ? cb(null, true) : cb(new Error(`origin ${o} not allowed`)), allowedHeaders: ["content-type", "x-org-id", "x-caller-email"] }));
+app.use(express.json({ limit: "6mb" }));
 
-const wrap = (fn) => (req, res) =>
-  fn(req, res).catch((e) => {
-    console.error(`[${req.method} ${req.path}] failed:`, e?.message || e);
-    res.status(500).json({ error: e?.message || String(e) });
-  });
-
-// ── org scoping + RBAC ──────────────────────────────────────────────────────
+const wrap = (fn) => (req, res) => fn(req, res).catch((e) => { console.error(`[${req.method} ${req.path}]`, e?.message || e); res.status(500).json({ error: e?.message || String(e) }); });
 const orgOf = (req) => req.headers["x-org-id"] || null;
 const callerOf = (req) => String(req.headers["x-caller-email"] || "").toLowerCase();
-const RANK = { owner: 4, admin: 3, member: 2, viewer: 1 };
+const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const RANK = { owner: 3, admin: 2 };
 
-// The org holder (whoever presents x-org-id = their own sub-org, or the stored owner email)
-// is the owner; a caller whose email matches an active member gets that member's role.
-async function roleFor(orgId, callerEmail) {
-  if (!orgId) return null;
-  const { owner } = await store.getOrgBundle(orgId);
-  const oe = String(owner?.email || "").toLowerCase();
-  if (!callerEmail || !oe || callerEmail === oe) return "owner";
-  const team = await store.listTeam(orgId);
-  const m = team.find((t) => String(t.email || "").toLowerCase() === callerEmail && t.status === "active");
-  return m ? m.role : null;
-}
-function requireOrg(req, res) {
-  const o = orgOf(req);
-  if (!o) { res.status(400).json({ error: "missing x-org-id header" }); return null; }
-  return o;
-}
-async function requireRole(req, res, min) {
-  const orgId = requireOrg(req, res);
-  if (!orgId) return null;
-  const role = await roleFor(orgId, callerOf(req));
-  if (!role || RANK[role] < RANK[min]) { res.status(403).json({ error: `requires ${min} role` }); return null; }
-  return { orgId, role };
-}
-function pickOrg(b = {}) {
-  const out = {};
-  for (const k of ["name", "image", "defaultDelivery", "defaultNetwork"]) if (b[k] !== undefined) out[k] = b[k];
-  return out;
+async function ctx(req, res, minRole) {
+  const subOrgId = orgOf(req);
+  if (!subOrgId) { res.status(400).json({ error: "missing x-org-id" }); return null; }
+  const treasury = await store.getTreasury(subOrgId);
+  if (!treasury) { res.status(404).json({ error: "treasury not found" }); return null; }
+  const caller = callerOf(req);
+  const member = caller ? await store.getMember(subOrgId, caller) : null;
+  const role = member?.role || null;
+  if (minRole && (!role || RANK[role] < RANK[minRole])) { res.status(403).json({ error: `requires ${minRole}` }); return null; }
+  return { subOrgId, treasury, caller, role, member };
 }
 
-// ── config / health ─────────────────────────────────────────────────────────
-app.get("/api/config", (_req, res) =>
-  res.json({ appName: APP_NAME, sdkApiBaseUrl: SDK_API_BASE_URL || null, dbMode, mailMode: mail.mode }));
-app.get("/healthz", (_req, res) => res.json({ ok: true, dbMode, mailMode: mail.mode }));
+// Public info (no rootKey) about a treasury + its team.
+async function publicTreasury(subOrgId, treasury) {
+  const members = (await store.listMembers(subOrgId)).map((m) => ({ email: m.email, name: m.name, role: m.role, status: m.status }));
+  return { subOrgId, name: treasury.name, address: treasury.address, chainId: treasury.chainId, threshold: treasury.threshold, memberCount: members.length, members };
+}
 
-// ── org / owner ─────────────────────────────────────────────────────────────
-app.get("/api/org", wrap(async (req, res) => {
-  const o = requireOrg(req, res); if (!o) return;
-  res.json(await store.getOrgBundle(o));
-}));
-app.put("/api/org", wrap(async (req, res) => {
-  const c = await requireRole(req, res, "admin"); if (!c) return;
-  res.json(await store.updateOrg(c.orgId, pickOrg(req.body)));
-}));
-// Establishing the owner also creates the org (the org holder = owner) — no role gate.
-app.post("/api/owner", wrap(async (req, res) => {
-  const o = requireOrg(req, res); if (!o) return;
-  await store.ensureOrg(o, { ownerSubOrgId: o });
-  res.json(await store.setOwner(o, req.body || {}));
-}));
+// ── config / health ──
+app.get("/api/config", (_req, res) => res.json({ appName: APP_NAME, chainId, rpcUrl: RPC_URL, diamondAddress: DIAMOND_ADDRESS, usdcAddress: USDC_ADDRESS, turnkeyBaseUrl: process.env.TURNKEY_API_BASE_URL || "https://api.turnkey.com", model: "B", dbMode, mail: mail.mode, tkEnabled }));
+app.get("/healthz", (_req, res) => res.json({ ok: true, dbMode, tkEnabled, mail: mail.mode }));
 
-// ── recipients ──────────────────────────────────────────────────────────────
-app.get("/api/recipients", wrap(async (req, res) => {
-  const o = requireOrg(req, res); if (!o) return;
-  res.json(await store.listRecipients(o));
-}));
-app.post("/api/recipients", wrap(async (req, res) => {
-  const c = await requireRole(req, res, "member"); if (!c) return;
-  const { label, address } = req.body || {};
-  if (!address || !/^0x[0-9a-fA-F]{40}$/.test(String(address))) return res.status(400).json({ error: "a valid 0x address is required" });
-  res.json(await store.addRecipient(c.orgId, { label, address, addedBy: callerOf(req) || null }));
-}));
-app.delete("/api/recipients/:id", wrap(async (req, res) => {
-  const c = await requireRole(req, res, "admin"); if (!c) return;
-  res.json({ removed: await store.removeRecipient(c.orgId, req.params.id) });
+// ── create a treasury (owner) ──
+app.post("/api/treasury", wrap(async (req, res) => {
+  const { ownerEmail, name, ownerName, threshold = 1 } = req.body || {};
+  if (!ownerEmail || !emailRe.test(ownerEmail)) return res.status(400).json({ error: "a valid ownerEmail is required" });
+  const inUse = await store.emailIndexGet(ownerEmail);
+  if (inUse) return res.status(409).json({ error: "This email already belongs to a treasury. One email can be part of only one treasury." });
+  const t = await createTreasury({ name: name || "Treasury", ownerEmail: ownerEmail.toLowerCase(), ownerName, threshold: Number(threshold) || 1 });
+  await store.createTreasury({ subOrgId: t.subOrgId, name: name || "Treasury", ownerEmail: ownerEmail.toLowerCase(), address: t.address, chainId, threshold: Number(threshold) || 1, spendPolicyId: t.spendPolicyId, rootKey: t.rootKey });
+  await store.addMember(t.subOrgId, { email: ownerEmail.toLowerCase(), name: ownerName || "Owner", role: "owner", userId: t.ownerUserId, status: "active" });
+  await store.emailIndexSet(ownerEmail, { subOrgId: t.subOrgId, role: "owner" });
+  console.log(`[treasury] created ${t.subOrgId.slice(0, 10)}… owner ${ownerEmail}`);
+  res.json({ subOrgId: t.subOrgId, address: t.address, name: name || "Treasury" });
 }));
 
-// ── team ────────────────────────────────────────────────────────────────────
-app.get("/api/team", wrap(async (req, res) => {
-  const o = requireOrg(req, res); if (!o) return;
-  res.json(await store.listTeam(o));
-}));
-app.put("/api/team/:id", wrap(async (req, res) => {
-  const c = await requireRole(req, res, "admin"); if (!c) return;
-  const { role } = req.body || {};
-  if (!["admin", "member", "viewer"].includes(role)) return res.status(400).json({ error: "role must be admin|member|viewer" });
-  await store.setTeamRole(c.orgId, req.params.id, role);
-  res.json({ ok: true });
-}));
-app.delete("/api/team/:id", wrap(async (req, res) => {
-  const c = await requireRole(req, res, "admin"); if (!c) return;
-  await store.removeTeamEntry(c.orgId, req.params.id);
-  res.json({ ok: true });
+// ── OTP auth relay (email → session in the treasury sub-org) ──
+app.post("/api/auth/init", wrap(async (req, res) => {
+  const { email } = req.body || {};
+  if (!email || !emailRe.test(email)) return res.status(400).json({ error: "a valid email is required" });
+  const idx = await store.emailIndexGet(email);
+  if (!idx) return res.status(404).json({ error: "No treasury for this email. Create one, or ask an admin to invite you." });
+  const treasury = await store.getTreasury(idx.subOrgId);
+  const otpId = await otpInit({ rootKey: treasury.rootKey, email: email.toLowerCase() });
+  res.json({ otpId, subOrgId: idx.subOrgId });
 }));
 
-// ── invites (create + email, view, accept) ───────────────────────────────────
-app.post("/api/invites", wrap(async (req, res) => {
-  const c = await requireRole(req, res, "admin"); if (!c) return;
-  const { email, name, role = "member" } = req.body || {};
-  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ error: "a valid email is required" });
-  if (!["admin", "member", "viewer"].includes(role)) return res.status(400).json({ error: "role must be admin|member|viewer" });
-
-  const { org, owner } = await store.getOrgBundle(c.orgId);
-  const orgName = org?.name || "your organization";
-  const inviterEmail = owner?.email || callerOf(req) || "A treasury owner";
-  const { invite, rawToken } = await store.createInvite(c.orgId, { email, name, role, invitedBy: c.orgId, invitedByEmail: inviterEmail, orgName });
-  const acceptUrl = `${APP_URL}/accept?invite=${invite.id}&token=${rawToken}`;
-
-  let emailed = { mode: "none" };
-  try { emailed = await sendInvite({ to: email, orgName, role, inviterEmail, acceptUrl }); }
-  catch (e) { console.error("[invite email] failed:", e?.message || e); emailed = { mode: "failed" }; }
-
-  console.log(`[invite] ${email} as ${role} to org ${String(c.orgId).slice(0, 10)}… (email: ${emailed.mode})`);
-  res.json({
-    invite: { id: invite.id, email: invite.email, role: invite.role, status: invite.status, createdAt: invite.createdAt, expiresAt: invite.expiresAt },
-    emailed: emailed.mode,
-    acceptUrl: emailed.mode !== "smtp" && emailed.mode !== "sendgrid" ? acceptUrl : undefined, // surfaced only when email didn't send
-  });
+app.post("/api/auth/verify", wrap(async (req, res) => {
+  const { email, otpId, otpCode, targetPublicKey } = req.body || {};
+  if (!email || !otpId || !otpCode || !targetPublicKey) return res.status(400).json({ error: "email, otpId, otpCode, targetPublicKey are required" });
+  const idx = await store.emailIndexGet(email);
+  if (!idx) return res.status(404).json({ error: "no treasury for this email" });
+  const treasury = await store.getTreasury(idx.subOrgId);
+  const { credentialBundle, userId } = await otpVerify({ rootKey: treasury.rootKey, otpId, otpCode, targetPublicKey, sessionSeconds: 43200 });
+  if (!credentialBundle) return res.status(401).json({ error: "invalid or expired code" });
+  const member = await store.getMember(idx.subOrgId, email);
+  if (member) await store.updateMember(idx.subOrgId, email, { status: "active", userId: userId || member.userId, joinedAt: new Date().toISOString() });
+  res.json({ credentialBundle, subOrgId: idx.subOrgId, address: treasury.address, name: treasury.name, threshold: treasury.threshold, chainId: treasury.chainId, role: member?.role || "admin", email: email.toLowerCase(), userId: userId || member?.userId });
 }));
 
-app.get("/api/invites/:id", wrap(async (req, res) => {
-  const inv = await store.getInvite(req.params.id);
-  if (!inv) return res.status(404).json({ error: "invite not found" });
-  if (!req.query.token || inv.tokenHash !== sha256(req.query.token)) return res.status(403).json({ error: "invalid invite link" });
-  const expired = Date.now() > new Date(inv.expiresAt).getTime();
-  res.json({ orgName: inv.orgName, role: inv.role, email: inv.email, invitedByEmail: inv.invitedByEmail, status: expired ? "expired" : inv.status, expired });
+// ── treasury context + team ──
+app.get("/api/treasury", wrap(async (req, res) => {
+  const c = await ctx(req, res); if (!c) return;
+  res.json({ ...(await publicTreasury(c.subOrgId, c.treasury)), role: c.role });
 }));
 
-app.post("/api/invites/accept", wrap(async (req, res) => {
-  const { inviteId, token, email, name, subOrgId } = req.body || {};
-  if (!inviteId || !token || !email) return res.status(400).json({ error: "inviteId, token and email are required" });
-  const result = await acceptInvite({ inviteId, token, email, name, subOrgId });
-  console.log(`[invite accepted] ${email} joined org ${String(result.orgId).slice(0, 10)}… as ${result.role}`);
-  res.json(result);
-}));
-
-// ── transactions ──────────────────────────────────────────────────────────────
-app.get("/api/transactions", wrap(async (req, res) => {
-  const o = requireOrg(req, res); if (!o) return;
-  let txs = await store.listTransactions(o);
-  const { kind, status, source, chainId, q, limit } = req.query;
-  if (kind && kind !== "all") txs = txs.filter((t) => t.kind === kind);
-  if (status && status !== "all") txs = txs.filter((t) => t.status === status);
-  if (source && source !== "all") txs = txs.filter((t) => (t.delivery || "") === source);
-  if (chainId && chainId !== "all") txs = txs.filter((t) => String(t.chainId) === String(chainId));
-  if (q) {
-    const s = String(q).toLowerCase();
-    txs = txs.filter((t) => (t.to || "").toLowerCase().includes(s) || (t.recipientLabel || "").toLowerCase().includes(s) || (t.txHash || "").toLowerCase().includes(s));
-  }
-  if (limit) txs = txs.slice(0, Number(limit));
-  res.json(txs);
-}));
-app.post("/api/transactions", wrap(async (req, res) => {
-  const c = await requireRole(req, res, "member"); if (!c) return;
-  const b = req.body || {};
-  const tx = {
-    subOrgId: c.orgId,
-    kind: b.kind || "payout",
-    status: b.status || "completed",
-    from: b.from || null,
-    to: b.to || null,
-    recipientLabel: b.recipientLabel || null,
-    token: b.token || null,
-    tokenSymbol: b.tokenSymbol || "USDC",
-    // Confidentiality is server-ENFORCED here: we NEVER persist a plaintext amount, even if a
-    // client sends one. Only the client-side-encrypted `amountEnc` is stored; the app decrypts
-    // it locally with the treasury's ElGamal key. Firestore never sees a cleartext figure.
-    amount: null,
-    amountEnc: b.amountEnc || null,
-    delivery: b.delivery || "confidential",
-    network: b.network || null,
-    chainId: b.chainId != null ? Number(b.chainId) : null,
-    txHash: b.txHash || null,
-    explorerUrl: b.explorerUrl || null,
-    batchId: b.batchId || null,
-    createdBy: b.createdBy || callerOf(req) || "Owner",
-    createdByRole: b.createdByRole || c.role,
-    approvedBy: b.approvedBy || null,
-    approvedAt: b.approvedAt || null,
-    note: b.note || null,
-    error: b.error || null,
-  };
-  res.json(await store.addTransaction(c.orgId, tx));
-}));
-app.patch("/api/transactions/:id", wrap(async (req, res) => {
-  const c = await requireRole(req, res, "admin"); if (!c) return;
-  const allowed = ["status", "txHash", "explorerUrl", "approvedBy", "approvedAt", "error", "note"];
+app.put("/api/treasury", wrap(async (req, res) => {
+  const c = await ctx(req, res, "admin"); if (!c) return;
   const patch = {};
-  for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
-  const t = await store.patchTransaction(c.orgId, req.params.id, patch);
-  if (!t) return res.status(404).json({ error: "transaction not found" });
-  res.json(t);
+  for (const k of ["name"]) if (req.body?.[k] !== undefined) patch[k] = req.body[k];
+  res.json(await store.updateTreasury(c.subOrgId, patch));
 }));
 
-// ── analytics (aggregate; amounts encrypted → the app computes real figures client-side) ──
-app.get("/api/analytics", wrap(async (req, res) => {
-  const o = requireOrg(req, res); if (!o) return;
-  const txs = await store.listTransactions(o);
-  const done = txs.filter((t) => t.status === "completed" && t.kind === "payout");
-  const totalVolume = done.reduce((s, t) => s + (Number(t.amount) || 0), 0);
-  const recipients = new Set(done.map((t) => (t.to || "").toLowerCase()).filter(Boolean));
-  const byDelivery = {}, byAsset = {}, monthly = {};
-  for (const t of done) {
-    byDelivery[t.delivery] = (byDelivery[t.delivery] || 0) + (Number(t.amount) || 0);
-    byAsset[t.tokenSymbol] = (byAsset[t.tokenSymbol] || 0) + (Number(t.amount) || 0);
-    const k = (t.createdAt || "").slice(0, 7);
-    if (k) monthly[k] = (monthly[k] || 0) + (Number(t.amount) || 0);
-  }
-  res.json({ totalVolume, totalPayouts: done.length, activeRecipients: recipients.size, byDelivery, byAsset, monthly });
+// ── members (add / remove) ──
+app.post("/api/members", wrap(async (req, res) => {
+  const c = await ctx(req, res, "admin"); if (!c) return;
+  const { email, name } = req.body || {};
+  if (!email || !emailRe.test(email)) return res.status(400).json({ error: "a valid email is required" });
+  const inUse = await store.emailIndexGet(email);
+  if (inUse) return res.status(409).json({ error: inUse.subOrgId === c.subOrgId ? "already a member of this treasury" : "This email already belongs to another treasury." });
+  const userId = await addMember({ rootKey: c.treasury.rootKey, email: email.toLowerCase(), name });
+  const member = await store.addMember(c.subOrgId, { email: email.toLowerCase(), name: name || email, role: "admin", userId, status: "active", invitedBy: c.caller });
+  await store.emailIndexSet(email, { subOrgId: c.subOrgId, role: "admin" });
+  let emailed = { mode: "none" };
+  try { emailed = await sendInvite({ to: email, orgName: c.treasury.name, role: "admin", inviterEmail: c.caller, acceptUrl: `${APP_URL}/?email=${encodeURIComponent(email)}` }); } catch (e) { console.error("[invite email]", e?.message); }
+  res.json({ member, emailed: emailed.mode });
 }));
 
-// ── memberships (Stage-2 org switcher: "which orgs is this email in?") ──
-app.get("/api/memberships", wrap(async (req, res) => {
-  const email = req.query.email;
-  if (!email) return res.status(400).json({ error: "email query required" });
-  res.json(await store.findMembershipsByEmail(email));
-}));
-
-// ── dev reset (this org only) ──
-app.post("/api/admin/reset", wrap(async (req, res) => {
-  const o = requireOrg(req, res); if (!o) return;
-  await store.reset(o);
+app.delete("/api/members/:email", wrap(async (req, res) => {
+  const c = await ctx(req, res, "admin"); if (!c) return;
+  const email = req.params.email.toLowerCase();
+  const m = await store.getMember(c.subOrgId, email);
+  if (!m) return res.status(404).json({ error: "member not found" });
+  if (m.role === "owner") return res.status(400).json({ error: "cannot remove the owner" });
+  if (m.userId) await removeMember({ rootKey: c.treasury.rootKey, userId: m.userId }).catch((e) => console.error("[removeMember tk]", e?.message));
+  await store.removeMember(c.subOrgId, email);
+  await store.emailIndexDel(email);
   res.json({ ok: true });
 }));
+
+// ── threshold (owner) ──
+app.put("/api/threshold", wrap(async (req, res) => {
+  const c = await ctx(req, res, "owner"); if (!c) return;
+  const threshold = Number(req.body?.threshold);
+  const members = await store.listMembers(c.subOrgId);
+  if (!Number.isInteger(threshold) || threshold < 1 || threshold > members.length) return res.status(400).json({ error: `threshold must be 1..${members.length}` });
+  const spendPolicyId = await setThreshold({ rootKey: c.treasury.rootKey, threshold, spendPolicyId: c.treasury.spendPolicyId });
+  await store.updateTreasury(c.subOrgId, { threshold, spendPolicyId });
+  res.json({ threshold });
+}));
+
+// ── payouts: propose / list (with live consensus + auto-execute) / reject ──
+app.post("/api/payouts", wrap(async (req, res) => {
+  const c = await ctx(req, res, "admin"); if (!c) return;
+  const b = req.body || {};
+  if (!b.activityId && !b.txHash) return res.status(400).json({ error: "activityId (pending) or txHash (completed) is required" });
+  const completed = !b.activityId && !!b.txHash; // solo (threshold 1) settles synchronously client-side
+  const payout = await store.addPayout(c.subOrgId, {
+    activityId: b.activityId || null, fingerprint: b.fingerprint || null,
+    kind: b.kind || "transfer", recipient: b.recipient || null, recipientLabel: b.recipientLabel || null,
+    amountEnc: b.amountEnc || null, tokenSymbol: b.tokenSymbol || "USDC", token: b.token || null, delivery: b.delivery || "confidential",
+    note: b.note || null, status: completed ? "completed" : "pending", txHash: b.txHash || null, explorerUrl: b.explorerUrl || null,
+    createdBy: c.caller, createdByName: c.member?.name || c.caller,
+  });
+  res.json(payout);
+}));
+
+// Per-process lock: many dashboards poll GET /api/payouts every few seconds, so several
+// requests can try to broadcast the SAME completed activity at once. Only one may broadcast.
+const broadcasting = new Set();
+
+// Enrich a payout with the Turnkey activity's live approval state; broadcast ONCE when the
+// threshold is met; then finalize its status from the on-chain receipt. Statuses:
+//   pending → (approvals accumulate) → submitted (broadcast, mining) → completed | failed
+async function enrichPayout(treasury, members, p) {
+  if (!["pending", "submitted"].includes(p.status) || !p.activityId) return p;
+
+  // Already broadcast → just read the receipt (idempotent; never re-broadcast).
+  if (p.status === "submitted" && p.txHash) {
+    const rc = await provider.getTransactionReceipt(p.txHash).catch(() => null);
+    if (!rc) return p; // still mining
+    return store.updatePayout(treasury.subOrgId, p.id, rc.status === 1 ? { status: "completed" } : { status: "failed", error: "reverted on-chain" });
+  }
+
+  let activity;
+  try { activity = await getActivity({ rootKey: treasury.rootKey, activityId: p.activityId }); } catch { return p; }
+  const byUser = Object.fromEntries(members.filter((m) => m.userId).map((m) => [m.userId, m]));
+  const approvals = [...new Set((activity?.votes || [])
+    .filter((v) => !v.selection || v.selection === "VOTE_SELECTION_APPROVED")
+    .map((v) => (v.user?.userEmail || byUser[v.userId]?.email || "").toLowerCase()).filter(Boolean))];
+  const patch = { approvals, tkStatus: activity?.status, fingerprint: activity?.fingerprint || p.fingerprint || null };
+
+  if (activity?.status === "ACTIVITY_STATUS_COMPLETED") {
+    const signed = activity.result?.signTransactionResult?.signedTransaction;
+    if (signed && !p.txHash && !broadcasting.has(p.id)) {
+      broadcasting.add(p.id);
+      try {
+        const hex = signed.startsWith("0x") ? signed : `0x${signed}`;
+        const hash = ethers.Transaction.from(hex).hash; // deterministic — same no matter who broadcasts
+        patch.status = "submitted"; patch.txHash = hash; patch.explorerUrl = explorerTx(hash);
+        try {
+          await provider.broadcastTransaction(hex);
+          console.log(`[payout ${p.id}] broadcast ${hash}`);
+        } catch (e) {
+          const m = String(e?.message || "").toLowerCase();
+          // "already known / nonce too low / replacement" = the tx is already out there → NOT a failure.
+          if (!/already known|nonce too low|replacement|already imported|known transaction|transaction already exists/.test(m)) {
+            patch.status = "failed"; patch.error = e?.message?.slice(0, 180); delete patch.txHash; delete patch.explorerUrl;
+          }
+        }
+      } finally { broadcasting.delete(p.id); }
+    }
+  } else if (activity?.status === "ACTIVITY_STATUS_REJECTED" || activity?.status === "ACTIVITY_STATUS_FAILED") {
+    patch.status = "failed"; patch.error = "rejected/failed at Turnkey";
+  }
+  return store.updatePayout(treasury.subOrgId, p.id, patch);
+}
+
+app.get("/api/payouts", wrap(async (req, res) => {
+  const c = await ctx(req, res); if (!c) return;
+  const [raw, members] = await Promise.all([store.listPayouts(c.subOrgId), store.listMembers(c.subOrgId)]);
+  const enriched = await Promise.all(raw.map((p) => enrichPayout({ ...c.treasury, subOrgId: c.subOrgId }, members, p)));
+  res.json(enriched.map(({ unsignedTx, ...rest }) => rest)); // don't ship the raw unsigned tx to the list
+}));
+
+app.post("/api/payouts/:id/rejected", wrap(async (req, res) => {
+  const c = await ctx(req, res, "admin"); if (!c) return;
+  res.json(await store.updatePayout(c.subOrgId, req.params.id, { status: "rejected" }));
+}));
+
+// ── recipients address book ──
+app.get("/api/recipients", wrap(async (req, res) => { const c = await ctx(req, res); if (!c) return; res.json(await store.listRecipients(c.subOrgId)); }));
+app.post("/api/recipients", wrap(async (req, res) => {
+  const c = await ctx(req, res, "admin"); if (!c) return;
+  const { label, address } = req.body || {};
+  if (!address || !/^0x[0-9a-fA-F]{40}$/.test(address)) return res.status(400).json({ error: "a valid 0x address is required" });
+  res.json(await store.addRecipient(c.subOrgId, { label: label || "Recipient", address, addedBy: c.caller }));
+}));
+app.delete("/api/recipients/:id", wrap(async (req, res) => { const c = await ctx(req, res, "admin"); if (!c) return; await store.removeRecipient(c.subOrgId, req.params.id); res.json({ ok: true }); }));
+
+// ── dev reset ──
+app.post("/api/admin/reset", wrap(async (_req, res) => { await store.reset(); res.json({ ok: true }); }));
 
 app.listen(Number(PORT), () => {
-  console.log(`[stabletrust-pro] backend on http://localhost:${PORT}`);
-  console.log(`[stabletrust-pro] db=${dbMode} · mail=${mail.mode} · origins ${ALLOWED_ORIGINS.join(", ")}`);
+  console.log(`[stabletrust-pro · Model B] backend on http://localhost:${PORT}`);
+  console.log(`[stabletrust-pro · Model B] db=${dbMode} · turnkey=${tkEnabled ? "on" : "OFF"} · mail=${mail.mode} · chain=${chainId}`);
 });

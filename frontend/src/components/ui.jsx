@@ -116,8 +116,10 @@ export function CopyBtn({ value, label = "Copy" }) {
 export function StatusBadge({ status }) {
   const map = {
     completed: ["ok", "Completed"],
+    submitted: ["warn", "Settling"],
     pending: ["warn", "Pending"],
     failed: ["err", "Failed"],
+    rejected: ["", "Rejected"],
   };
   const [cls, txt] = map[status] || ["", status];
   return <span className={`badge ${cls}`}>{txt}</span>;

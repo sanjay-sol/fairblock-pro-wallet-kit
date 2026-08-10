@@ -1,17 +1,14 @@
-// Thin client for the multi-tenant backend. Every request is scoped to the current org
-// via the `x-org-id` header (the signed-in treasury's sub-org / address) plus the caller's
-// email for RBAC — set by OrgContext through setApiContext().
+// Model B API client. Requests are scoped by x-org-id (treasury subOrgId) + x-caller-email
+// (the signed-in admin), set from the session via setApiContext().
 import { BACKEND_URL } from "../config.js";
 
-let ctx = { orgId: null, callerEmail: null };
-export function setApiContext({ orgId = null, callerEmail = null } = {}) {
-  ctx = { orgId, callerEmail };
-}
+let ctx = { subOrgId: null, email: null };
+export function setApiContext(c = {}) { ctx = { ...ctx, ...c }; }
 
 async function j(path, opts = {}) {
   const headers = { "content-type": "application/json", ...(opts.headers || {}) };
-  if (ctx.orgId) headers["x-org-id"] = ctx.orgId;
-  if (ctx.callerEmail) headers["x-caller-email"] = ctx.callerEmail;
+  if (ctx.subOrgId) headers["x-org-id"] = ctx.subOrgId;
+  if (ctx.email) headers["x-caller-email"] = ctx.email;
   const r = await fetch(`${BACKEND_URL}${path}`, { ...opts, headers });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(body.error || `${path} → ${r.status}`);
@@ -19,36 +16,23 @@ async function j(path, opts = {}) {
 }
 
 export const api = {
-  // recipients address book
+  config: () => j("/api/config"),
+  // treasury lifecycle + auth
+  createTreasury: (p) => j("/api/treasury", { method: "POST", body: JSON.stringify(p) }),
+  authInit: (email) => j("/api/auth/init", { method: "POST", body: JSON.stringify({ email }) }),
+  authVerify: (p) => j("/api/auth/verify", { method: "POST", body: JSON.stringify(p) }),
+  getTreasury: () => j("/api/treasury"),
+  updateTreasury: (patch) => j("/api/treasury", { method: "PUT", body: JSON.stringify(patch) }),
+  // members
+  addMember: (m) => j("/api/members", { method: "POST", body: JSON.stringify(m) }),
+  removeMember: (email) => j(`/api/members/${encodeURIComponent(email)}`, { method: "DELETE" }),
+  setThreshold: (threshold) => j("/api/threshold", { method: "PUT", body: JSON.stringify({ threshold }) }),
+  // payouts (consensus)
+  listPayouts: () => j("/api/payouts"),
+  proposePayout: (p) => j("/api/payouts", { method: "POST", body: JSON.stringify(p) }),
+  rejectPayout: (id) => j(`/api/payouts/${id}/rejected`, { method: "POST" }),
+  // recipients
   recipients: () => j("/api/recipients"),
-  addRecipient: (label, address) =>
-    j("/api/recipients", { method: "POST", body: JSON.stringify({ label, address }) }),
+  addRecipient: (label, address) => j("/api/recipients", { method: "POST", body: JSON.stringify({ label, address }) }),
   removeRecipient: (id) => j(`/api/recipients/${id}`, { method: "DELETE" }),
-
-  // org / owner
-  getOrg: () => j("/api/org"),
-  updateOrg: (patch) => j("/api/org", { method: "PUT", body: JSON.stringify(patch) }),
-  setOwner: (owner) => j("/api/owner", { method: "POST", body: JSON.stringify(owner) }),
-
-  // team + invites
-  getTeam: () => j("/api/team"),
-  updateMember: (id, patch) => j(`/api/team/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(patch) }),
-  removeMember: (id) => j(`/api/team/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  invite: (m) => j("/api/invites", { method: "POST", body: JSON.stringify(m) }),
-  getInvite: (inviteId, token) => j(`/api/invites/${inviteId}?token=${encodeURIComponent(token)}`),
-  acceptInvite: (payload) => j("/api/invites/accept", { method: "POST", body: JSON.stringify(payload) }),
-  memberships: (email) => j(`/api/memberships?email=${encodeURIComponent(email)}`),
-
-  // transactions
-  getTransactions: (params = {}) => {
-    const qs = new URLSearchParams(
-      Object.entries(params).filter(([, v]) => v != null && v !== ""),
-    ).toString();
-    return j(`/api/transactions${qs ? `?${qs}` : ""}`);
-  },
-  addTransaction: (tx) => j("/api/transactions", { method: "POST", body: JSON.stringify(tx) }),
-  patchTransaction: (id, patch) =>
-    j(`/api/transactions/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
-
-  analytics: () => j("/api/analytics"),
 };

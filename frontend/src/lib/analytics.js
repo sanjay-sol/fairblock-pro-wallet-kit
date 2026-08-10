@@ -2,11 +2,11 @@
 // longer aggregate amounts (they're stored encrypted), so we compute volume /
 // by-asset / monthly here after decryption. Counts don't need amounts.
 export function computeAnalytics(txs = []) {
-  const done = txs.filter((t) => t.status === "completed" && t.kind === "payout");
+  const done = txs.filter((t) => t.status === "completed" && ["payout", "transfer", "withdraw"].includes(t.kind));
   const num = (t) => Number(t.amount) || 0; // t.amount is the decrypted value (or null → 0)
 
   const totalVolume = done.reduce((s, t) => s + num(t), 0);
-  const recipients = new Set(done.map((t) => (t.to || "").toLowerCase()).filter(Boolean));
+  const recipients = new Set(done.map((t) => (t.to || t.recipient || "").toLowerCase()).filter(Boolean));
 
   const byDelivery = {};
   for (const t of done) byDelivery[t.delivery] = (byDelivery[t.delivery] || 0) + num(t);

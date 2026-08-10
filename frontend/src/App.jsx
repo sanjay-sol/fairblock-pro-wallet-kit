@@ -1,16 +1,14 @@
 import { useState } from "react";
-import { Routes, Route, useLocation } from "react-router-dom";
+import { Routes, Route } from "react-router-dom";
 import { useOrg } from "./state/OrgContext.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import Topbar from "./components/Topbar.jsx";
 import Toasts from "./components/Toasts.jsx";
-import ConnectGate from "./components/ConnectGate.jsx";
-import AcceptInvite from "./pages/AcceptInvite.jsx";
+import Onboard from "./pages/Onboard.jsx";
 import { TopProgressBar } from "./components/ui.jsx";
 
 import Dashboard from "./pages/Dashboard.jsx";
 import SinglePayout from "./pages/SinglePayout.jsx";
-import BatchPayout from "./pages/BatchPayout.jsx";
 import Fund from "./pages/Fund.jsx";
 import Analytics from "./pages/Analytics.jsx";
 import PendingPayouts from "./pages/PendingPayouts.jsx";
@@ -19,31 +17,20 @@ import Team from "./pages/Team.jsx";
 import Settings from "./pages/Settings.jsx";
 
 export default function App() {
-  const { ready, bootError, treasury } = useOrg();
-  const { pathname } = useLocation();
+  const { ready, bootError, treasury, authed } = useOrg();
   const [collapsed, setCollapsed] = useState(false);
 
   if (bootError) {
     return (
-      <div className="gate">
-        <div className="box">
-          <img className="logo-lg" src="/Logo.png" alt="" />
-          <h1>Backend unreachable</h1>
-          <p>{bootError}</p>
-          <p className="hint">Start the backend: <span className="mono">cd fairblock-pro/backend && npm run dev</span></p>
-        </div>
-      </div>
+      <div className="gate"><div className="box">
+        <img className="logo-lg" src="/Logo.png" alt="" />
+        <h1>Backend unreachable</h1><p>{bootError}</p>
+        <p className="hint">Start it: <span className="mono">cd backend && node server.mjs</span></p>
+      </div></div>
     );
   }
-
-  if (!ready) {
-    return <div className="gate"><div className="box"><img className="logo-lg" src="/Logo.png" alt="" /><p>Loading…</p></div></div>;
-  }
-
-  // The invite-accept page is reachable whether or not you're signed in.
-  if (pathname === "/accept") return (<><TopProgressBar /><AcceptInvite /><Toasts /></>);
-
-  if (!treasury) return (<><TopProgressBar /><ConnectGate /><Toasts /></>);
+  if (!ready) return <div className="gate"><div className="box"><img className="logo-lg" src="/Logo.png" alt="" /><p>Loading…</p></div></div>;
+  if (!treasury || !authed) return (<><TopProgressBar /><Onboard /><Toasts /></>);
 
   return (
     <div className={`shell ${collapsed ? "collapsed" : ""}`}>
@@ -54,7 +41,6 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/single" element={<SinglePayout />} />
-          <Route path="/batch" element={<BatchPayout />} />
           <Route path="/fund" element={<Fund />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/pending" element={<PendingPayouts />} />
