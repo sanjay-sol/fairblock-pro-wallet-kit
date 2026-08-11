@@ -1,16 +1,3 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// Model B multi-chain registry (server-side, for EXECUTION: providers, nonce
-// reservation, broadcasting, receipts, explorer links).
-//
-// A treasury's wallet is ONE Ethereum address that works on every EVM chain here.
-// The confidential diamond + USDC are per-chain. The confidential account (encryption
-// key + on-chain registration) is per-chain too (derived from a sig bound to
-// (chainId, contract)) — so funding/activation happen independently on each chain.
-//
-// ⚠ MUST STAY IN SYNC with frontend/src/networks.js (same diamond/token/rpc per chain).
-// The frontend owns the UI extras (faucets, order); the backend owns execution.
-// Per-chain RPC override: set env RPC_<chainId> (e.g. RPC_84532=https://…).
-// ─────────────────────────────────────────────────────────────────────────────
 import { ethers } from "ethers";
 
 const rpc = (chainId, fallback) => process.env[`RPC_${chainId}`] || fallback;

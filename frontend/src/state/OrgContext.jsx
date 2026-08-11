@@ -166,11 +166,16 @@ export function OrgProvider({ children }) {
 
   useEffect(() => { const id = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id); }, []);
   // Poll pending payouts so the consensus view + auto-execute + balance refresh stay live.
+  // Read-reduction: SKIP polling while the tab is hidden (huge saver for backgrounded tabs),
+  // poll fast only while something is pending, and slowly when idle. Refresh once on re-focus.
   useEffect(() => {
     if (!treasury) return;
     const hasPending = payouts.some((p) => p.status === "pending" || p.status === "submitted");
-    const id = setInterval(() => { if (treasuryRef.current) reloadPayouts(); }, hasPending ? 5000 : 20000);
-    return () => clearInterval(id);
+    const interval = hasPending ? 6000 : 45000;
+    const id = setInterval(() => { if (treasuryRef.current && !document.hidden) reloadPayouts(); }, interval);
+    const onVis = () => { if (!document.hidden && treasuryRef.current) reloadPayouts(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
   }, [treasury, payouts, reloadPayouts]);
 
   // ── auth ──

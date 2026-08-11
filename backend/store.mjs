@@ -29,15 +29,25 @@ let impl = null;
 export function initStore() {
   const wantFs = String(process.env.DB_BACKEND || "").toLowerCase() === "firestore";
   const svcUrl = new URL("./serviceAccount.json", import.meta.url);
-  if (wantFs && existsSync(svcUrl)) {
-    if (!getApps().length) initializeApp({ credential: cert(JSON.parse(readFileSync(svcUrl))) });
-    fs = getFirestore();
-    impl = firestoreImpl;
-    mode = "firestore";
-  } else {
-    impl = memoryImpl;
-    mode = "memory";
+  if (wantFs) {
+    try {
+      if (!getApps().length) {
+        // Local dev: use the service-account JSON if present. On Cloud Run (or any GCP
+        // runtime) there is NO file — initializeApp() with no args uses Application
+        // Default Credentials (the runtime service account), so no secret JSON to ship.
+        if (existsSync(svcUrl)) initializeApp({ credential: cert(JSON.parse(readFileSync(svcUrl))) });
+        else initializeApp();
+      }
+      fs = getFirestore();
+      impl = firestoreImpl;
+      mode = "firestore";
+      return mode;
+    } catch (e) {
+      console.error("[store] firestore init failed — falling back to in-memory:", e?.message || e);
+    }
   }
+  impl = memoryImpl;
+  mode = "memory";
   return mode;
 }
 export const storeMode = () => mode;

@@ -1,9 +1,3 @@
-// Transactional email for invites. Auto-selects a transport from env:
-//   SENDGRID_API_KEY → SendGrid SMTP relay (GCP-friendly)
-//   SMTP_HOST/USER    → generic SMTP (e.g. Gmail App Password) — what we use today
-//   neither           → console (logs the accept link, so nothing breaks in dev)
-// For a backend deployed ON GCP, prefer SendGrid's HTTPS API (Compute Engine/Cloud Run
-// block outbound SMTP ports); swapping this transport is a one-line change.
 import nodemailer from "nodemailer";
 
 let transport = null;

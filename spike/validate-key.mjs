@@ -29,13 +29,19 @@ const created = await parent.createSubOrganization({
 });
 const subOrgId = subResult(created).subOrganizationId, address = subResult(created).wallet?.addresses?.[0];
 console.log(`  ${G("✓")} createSubOrganization · ${subOrgId?.slice(0, 8)}…`);
-try {
-  const root = clientFor(rk.publicKey, rk.privateKey, subOrgId);
-  await root.signRawPayload({ organizationId: subOrgId, signWith: address, payload: "0x" + "ab".repeat(32), encoding: "PAYLOAD_ENCODING_HEXADECIMAL", hashFunction: "HASH_FUNCTION_NO_OP" });
-  console.log(`  ${G("✓ signRawPayload SUCCEEDED — this org HAS signing credits ✅")}`);
-  process.exit(0);
-} catch (e) {
-  const quota = /quota|resource exhausted|signing is disabled/i.test(String(e?.message));
-  console.log(`  ${R("✗")} signRawPayload failed${quota ? " (OVER QUOTA)" : ""}: ${String(e?.message).slice(0, 200)}`);
-  process.exit(2);
+const root = clientFor(rk.publicKey, rk.privateKey, subOrgId);
+let lastErr = null;
+for (let i = 0; i < 6; i++) {
+  try {
+    await root.signRawPayload({ organizationId: subOrgId, signWith: address, payload: "0x" + "ab".repeat(32), encoding: "PAYLOAD_ENCODING_HEXADECIMAL", hashFunction: "HASH_FUNCTION_NO_OP" });
+    console.log(`  ${G("✓ signRawPayload SUCCEEDED — this org HAS signing credits ✅")}`);
+    process.exit(0);
+  } catch (e) {
+    lastErr = e;
+    if (/quota|resource exhausted|signing is disabled/i.test(String(e?.message))) break; // quota won't fix with retry
+    await new Promise((r) => setTimeout(r, 2500)); // sub-org propagation lag — retry
+  }
 }
+const quota = /quota|resource exhausted|signing is disabled/i.test(String(lastErr?.message));
+console.log(`  ${R("✗")} signRawPayload failed${quota ? " (OVER QUOTA)" : ""}: ${String(lastErr?.message).slice(0, 200)}`);
+process.exit(2);

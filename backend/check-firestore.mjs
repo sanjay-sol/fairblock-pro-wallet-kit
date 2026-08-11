@@ -1,5 +1,3 @@
-// One-shot probe: is the Firebase/Firestore daily quota available again?
-// Does a SINGLE minimal read (limit 1) and reports quota state. Independent of DB_BACKEND.
 import { existsSync, readFileSync } from "node:fs";
 import { initializeApp, cert, getApps } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";

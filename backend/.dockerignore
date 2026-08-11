@@ -1,0 +1,17 @@
+# Never bake secrets or local junk into the image (secrets come from env / Secret Manager).
+node_modules
+.env
+.env.*
+serviceAccount.json
+serviceAccount*.json
+data/
+*.log
+.git
+.gitignore
+Dockerfile
+.dockerignore
+# dev/ops scripts not needed at runtime
+check-firestore.mjs
+check-receipts.mjs
+debug-payout.mjs
+test-turnkey.mjs
