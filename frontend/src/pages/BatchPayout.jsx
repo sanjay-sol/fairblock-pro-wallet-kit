@@ -97,7 +97,7 @@ export default function BatchPayout() {
 
   return (
     <div className="page">
-      <div className="page-head"><h1>Batch Payout</h1><p>Pay many recipients from the treasury. {willPropose ? `Each becomes a ${threshold}-of-${signerCount} payout — co-sign the whole batch in one click.` : "You're the sole signer — these send immediately."}</p></div>
+      <div className="page-head"><h1>Batch Payout</h1><p>Pay many recipients from the treasury. {willPropose ? `Each becomes a ${threshold}-of-${signerCount} payout.` : "You're the sole signer - these send immediately."}</p></div>
 
       {view === "build" && (
         <>
@@ -106,11 +106,11 @@ export default function BatchPayout() {
             <div className="choice-grid">
               <div className={`choice ${delivery === "confidential" ? "sel" : ""}`} onClick={() => changeDelivery("confidential")}>
                 <div className="ct"><span className="radio" /> Confidential Settlement <span className="badge brand">Recommended</span></div>
-                <div className="cd">Each amount hidden on-chain. <b>Recipients need a confidential account</b> (checked below).</div>
+                <div className="cd">Each amount encrypted onchain. <b>Recipients need a confidential account</b> (checked below).</div>
               </div>
               <div className={`choice ${delivery === "direct" ? "sel" : ""}`} onClick={() => changeDelivery("direct")}>
                 <div className="ct"><span className="radio" /> Direct to wallet</div>
-                <div className="cd">Funds land in each recipient's public wallet; amounts public.</div>
+                <div className="cd">Funds land in each recipient's public wallet.</div>
               </div>
             </div>
           </div>

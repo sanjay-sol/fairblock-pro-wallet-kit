@@ -18,7 +18,7 @@ export default function TransactionHistory() {
 
   return (
     <div className="page">
-      <div className="page-head between"><div><h1>Transaction History</h1><p>Full audit trail of treasury deposits and payouts. Amounts are decrypted locally with your key.</p></div></div>
+      <div className="page-head between"><div><h1>Transaction History</h1><p> Amounts are decrypted locally with your key.</p></div></div>
 
       <div className="card" style={{ padding: 14, marginBottom: 14 }}>
         <div className="flex wrap">

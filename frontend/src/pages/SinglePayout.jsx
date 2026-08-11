@@ -42,7 +42,7 @@ export default function SinglePayout() {
 
   return (
     <div className="page narrow">
-      <div className="page-head"><h1>Single Payout</h1><p>Privately send — or propose for approval — a payment from the treasury.</p></div>
+      <div className="page-head"><h1>Single Payout</h1></div>
       <Stepper steps={["Payment details", "Preview & Confirm"]} current={step} />
 
       {step === 0 && (
@@ -85,11 +85,11 @@ export default function SinglePayout() {
           <div className="choice-grid">
             <div className={`choice ${delivery === "confidential" ? "sel" : ""}`} onClick={() => setDelivery("confidential")}>
               <div className="ct"><span className="radio" /> Confidential Settlement <span className="badge brand">Recommended</span></div>
-              <div className="cd">To the recipient's private balance. <b>Amount hidden on-chain.</b> Recipient needs a confidential account.</div>
+              <div className="cd">To the recipient's private balance. <b>Amount encrypted onchain.</b> Recipient needs a confidential account.</div>
             </div>
             <div className={`choice ${delivery === "direct" ? "sel" : ""}`} onClick={() => setDelivery("direct")}>
               <div className="ct"><span className="radio" /> Direct to wallet</div>
-              <div className="cd">To the recipient's public wallet. <b>Amount becomes public.</b></div>
+              <div className="cd">To the recipient's public wallet.</div>
             </div>
           </div>
 

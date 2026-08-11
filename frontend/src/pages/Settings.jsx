@@ -15,7 +15,7 @@ export default function Settings() {
 
   return (
     <div className="page narrow">
-      <div className="page-head"><h1>Settings</h1><p>Manage your treasury and its co-signing policy.</p></div>
+      <div className="page-head"><h1>Settings</h1><p>Manage your treasury and policies.</p></div>
 
       <div className="card">
         <div className="between" style={{ marginBottom: 14 }}><h3>Treasury</h3>{isOwner && <button className="btn primary sm" disabled={busy || !name.trim()} onClick={() => saveName(name.trim())}>Save</button>}</div>
@@ -25,17 +25,17 @@ export default function Settings() {
 
       <div className="card">
         <h3 style={{ marginBottom: 6 }}>Approval policy</h3>
-        <p className="csub">How many co-signers must approve each payout. Enforced by Turnkey — no single admin can move funds alone.</p>
+        <p className="csub">How many organisation members must approve each payout. No single admin can move funds alone.</p>
         <div className="flex" style={{ gap: 12, alignItems: "center", marginTop: 12 }}>
           <select value={th} disabled={!isOwner} onChange={(e) => setTh(Number(e.target.value))} style={{ maxWidth: 90 }}>
             {Array.from({ length: signers.length }).map((_, i) => <option key={i + 1} value={i + 1}>{i + 1}</option>)}
           </select>
-          <span className="muted">of {signers.length} co-signer{signers.length === 1 ? "" : "s"} must approve</span>
+          <span className="muted">of {signers.length} member{signers.length === 1 ? "" : "s"} must approve</span>
           {isOwner && th !== threshold && <button className="btn primary sm" disabled={busy || pendingCount > 0} onClick={() => setThreshold(th)}>Update to {th}-of-{signers.length}</button>}
         </div>
         {!isOwner && <p className="hint" style={{ marginTop: 10 }}>Only the owner can change the threshold.</p>}
-        {isOwner && pendingCount > 0 && <p className="hint" style={{ marginTop: 10, color: "var(--warn)" }}>Resolve the {pendingCount} pending payout{pendingCount === 1 ? "" : "s"} first — changing the threshold now would retroactively change how many approvals they need.</p>}
-        {th > 1 && signers.length < th && <p className="hint" style={{ marginTop: 10, color: "var(--warn)" }}>Add more co-signers on the Team page first.</p>}
+        {isOwner && pendingCount > 0 && <p className="hint" style={{ marginTop: 10, color: "var(--warn)" }}>Resolve the {pendingCount} pending payout{pendingCount === 1 ? "" : "s"} first - changing the threshold now would retroactively change how many approvals they need.</p>}
+        {th > 1 && signers.length < th && <p className="hint" style={{ marginTop: 10, color: "var(--warn)" }}>Add more members on the Team page first.</p>}
       </div>
 
       <div className="card">

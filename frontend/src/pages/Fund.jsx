@@ -15,7 +15,7 @@ export default function Fund() {
     <div className="page narrow">
       <div className="page-head">
         <h1>Fund wallet</h1>
-        <p>The treasury is a fresh wallet — it starts empty. Fund it on <b>{cfg?.networkName}</b> with a little {nativeSymbol} for gas and some {symbol}, then deposit into the confidential balance.</p>
+        <p>The treasury is a fresh wallet - it starts empty. Fund it on <b>{cfg?.networkName}</b>.</p>
       </div>
 
       <div className="card">

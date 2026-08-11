@@ -21,17 +21,17 @@ export default function Team() {
   return (
     <div className="page">
       <div className="page-head between">
-        <div><h1>Team</h1><p>Co-signers on this treasury. Payouts need <b>{threshold} of {signers.length}</b> to approve.</p></div>
-        {canManage && <button className="btn primary" onClick={() => setShow((s) => !s)}><Icon.plus size={15} /> Add co-signer</button>}
+        <div><h1>Team</h1><p>Add Organisation members to this treasury. Payouts right now configured to <b>{threshold} of {signers.length}</b> members approval.</p></div>
+        {canManage && <button className="btn primary" onClick={() => setShow((s) => !s)}><Icon.plus size={15} /> Invite Member</button>}
       </div>
 
       {show && (
         <div className="card">
-          <h3>Add a co-signer</h3>
-          <p className="csub">They'll get an email to sign in with this address. They can view balances and co-sign payouts. One email = one treasury.</p>
+          <h3>Add a Member</h3>
+          <p className="csub">They'll get an email to sign in with this address. They can view balances and approve payouts.</p>
           <div className="card-row cols-2">
-            <div className="field" style={{ margin: 0 }}><label className="fld">Name</label><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Jane Doe" /></div>
-            <div className="field" style={{ margin: 0 }}><label className="fld">Email</label><input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="jane@company.com" onKeyDown={(e) => e.key === "Enter" && invite()} /></div>
+            <div className="field" style={{ margin: 0 }}><label className="fld">Name</label><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Member 1" /></div>
+            <div className="field" style={{ margin: 0 }}><label className="fld">Email</label><input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="member1@company.com" onKeyDown={(e) => e.key === "Enter" && invite()} /></div>
           </div>
           <div className="flex" style={{ marginTop: 12 }}>
             <button className="btn ghost" onClick={() => setShow(false)}>Cancel</button>
@@ -41,9 +41,9 @@ export default function Team() {
       )}
 
       <div className="card">
-        <h3 style={{ marginBottom: 14 }}>Co-signers ({signers.length})</h3>
+        <h3 style={{ marginBottom: 14 }}>Members ({signers.length})</h3>
         {signers.length === 0 ? (
-          <EmptyState icon={<Icon.team size={24} />} title="No team yet">Add co-signers so payouts require multiple approvals.</EmptyState>
+          <EmptyState icon={<Icon.team size={24} />} title="No team yet">Add organisation members so payouts require multiple approvals.</EmptyState>
         ) : (
           <div className="table-wrap"><table>
             <thead><tr><th>Member</th><th>Email</th><th>Role</th><th>Status</th><th className="right">Action</th></tr></thead>

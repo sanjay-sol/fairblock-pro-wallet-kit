@@ -20,7 +20,7 @@ export default function PendingPayouts() {
 
   return (
     <div className="page">
-      <div className="page-head"><h1>Pending Payouts</h1><p>Awaiting co-signer approval — each needs <b>{threshold} of {signerCount}</b> admins, then it settles on-chain automatically.</p></div>
+      <div className="page-head"><h1>Pending Payouts</h1><p>Awaiting co-signer approval - each needs <b>{threshold} of {signerCount}</b> admins, then it settles onchain automatically.</p></div>
 
       {pending.length === 0 ? (
         <div className="card"><EmptyState icon={<Icon.pending size={24} />} title="No pending payouts">Proposed payouts (single or batch) appear here for you and your team to co-sign.</EmptyState></div>

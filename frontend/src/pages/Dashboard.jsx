@@ -22,7 +22,7 @@ export default function Dashboard() {
   const funded = hasGas && (hasToken || hasConfidential);
   const setupCurrent = !funded ? 0 : !treasury.activated ? 1 : !hasConfidential ? 2 : 3;
   const setupSteps = [
-    { label: "Fund wallet", done: funded, go: () => nav("/fund") },
+    { label: "Deposit", done: funded, go: () => nav("/fund") },
     { label: "Derive confidential keys", done: treasury.activated, go: () => { if (!treasury.activated) activateTreasury(); } },
     { label: "Load confidential balance", done: hasConfidential, go: () => document.getElementById("deposit-card")?.scrollIntoView({ behavior: "smooth", block: "center" }) },
     { label: "Send a payout", done: false, go: () => nav("/single") },
@@ -54,7 +54,7 @@ export default function Dashboard() {
             <b>Fund your treasury to get started</b>
             <p className="csub" style={{ margin: "4px 0 0" }}>{!hasGas ? `Add ${nativeSymbol} for gas` : `Add ${symbol}`} on {network?.name}</p>
           </div>
-          <button className="btn primary" onClick={() => nav("/fund")}><Icon.receive size={15} /> Fund wallet</button>
+          <button className="btn primary" onClick={() => nav("/fund")}><Icon.receive size={15} /> Deposit</button>
         </div>
       )}
 
@@ -89,7 +89,7 @@ export default function Dashboard() {
             <AsyncButton className="btn primary" style={{ flex: "0 0 auto" }} disabled={busy || !treasury.activated || !(Number(depAmt) > 0)} onClick={() => depositToConfidential(depAmt)} loadingText="Depositing…"><Icon.download size={15} /> Deposit</AsyncButton>
           </div>
           {!treasury.activated && <p className="hint" style={{ marginTop: 10 }}>Derive your confidential keys first.</p>}
-          {threshold > 1 && <p className="hint" style={{ marginTop: 10 }}>Any single admin can fund the pool (deposits are <b>1-of-{signerCount}</b>). Only payouts require <b>{threshold}-of-{signerCount}</b> co-signing.</p>}
+          {threshold > 1 && <p className="hint" style={{ marginTop: 10 }}>Any single admin can fund the pool (deposits are <b>1-of-{signerCount}</b>). Only payouts require <b>{threshold}-of-{signerCount}</b> approval.</p>}
         </div>
       </div>
 
@@ -111,7 +111,7 @@ export default function Dashboard() {
         </button>
         <button className="card" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => nav("/pending")}>
           <div className="between"><h3><Icon.pending size={16} /> &nbsp;Pending Payouts</h3><Icon.chevR size={16} /></div>
-          <p className="csub" style={{ margin: "8px 0 0" }}>Review + co-sign requests awaiting approval.</p>
+          <p className="csub" style={{ margin: "8px 0 0" }}>Review requests awaiting approval.</p>
         </button>
       </div>
 
