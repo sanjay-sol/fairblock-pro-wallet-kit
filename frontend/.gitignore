@@ -3,3 +3,4 @@ dist/
 .env
 _*.mjs
 *.png
+!public/*.png
