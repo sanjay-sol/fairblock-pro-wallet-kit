@@ -18,14 +18,41 @@ export default function Dashboard() {
   const pending = payouts.filter((p) => p.status === "pending").length;
   const refreshAll = async () => { await reloadPayouts(); await refreshBalances(); };
 
+  // Live getting-started guide — highlights the step you're on; each is clickable.
+  const funded = hasGas && (hasToken || hasConfidential);
+  const setupCurrent = !funded ? 0 : !treasury.activated ? 1 : !hasConfidential ? 2 : 3;
+  const setupSteps = [
+    { label: "Fund wallet", done: funded, go: () => nav("/fund") },
+    { label: "Derive confidential keys", done: treasury.activated, go: () => { if (!treasury.activated) activateTreasury(); } },
+    { label: "Load confidential balance", done: hasConfidential, go: () => document.getElementById("deposit-card")?.scrollIntoView({ behavior: "smooth", block: "center" }) },
+    { label: "Send a payout", done: false, go: () => nav("/single") },
+  ];
+
   return (
     <div className="page">
+      <div className="card" style={{ marginBottom: 16, padding: "12px 16px" }}>
+        <div className="flex between" style={{ marginBottom: 10, flexWrap: "wrap", gap: 6 }}>
+          {/* <b style={{ fontSize: 11.5, letterSpacing: ".4px", textTransform: "uppercase", color: "var(--muted)" }}>Getting started</b> */}
+        </div>
+        <div className="stepper" style={{ marginBottom: 0, flexWrap: "wrap" }}>
+          {setupSteps.map((s, i) => (
+            <div key={s.label} style={{ display: "contents" }}>
+              <button className={`step ${i === setupCurrent ? "active" : ""} ${s.done ? "done" : ""}`} onClick={s.go} title={s.label} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit" }}>
+                <span className="n">{s.done ? <Icon.check size={13} /> : i + 1}</span>
+                <span>{s.label}</span>
+              </button>
+              {i < setupSteps.length - 1 && <span className="bar" />}
+            </div>
+          ))}
+        </div>
+      </div>
+
       {needsFunding && (
         <div className="card" style={{ marginBottom: 16, borderColor: "var(--brand)", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
           <Icon.wallet size={20} />
           <div style={{ flex: 1, minWidth: 220 }}>
             <b>Fund your treasury to get started</b>
-            <p className="csub" style={{ margin: "4px 0 0" }}>{!hasGas ? `Add ${nativeSymbol} for gas` : `Add ${symbol}`} on {network?.name} — from a faucet or another wallet.</p>
+            <p className="csub" style={{ margin: "4px 0 0" }}>{!hasGas ? `Add ${nativeSymbol} for gas` : `Add ${symbol}`} on {network?.name}</p>
           </div>
           <button className="btn primary" onClick={() => nav("/fund")}><Icon.receive size={15} /> Fund wallet</button>
         </div>
@@ -53,9 +80,9 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="card">
+        <div className="card" id="deposit-card">
           <h3>Load confidential balance</h3>
-          <p className="csub">Move public {symbol} into the treasury's confidential balance — the pool payouts draw from.</p>
+          <p className="csub">Move public {symbol} into the treasury's confidential balance.</p>
           <label className="fld" style={{ marginTop: 12 }}>Amount ({symbol})</label>
           <div className="inline">
             <input value={depAmt} onChange={(e) => setDepAmt(e.target.value)} />
@@ -80,7 +107,7 @@ export default function Dashboard() {
         </button>
         <button className="card" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => nav("/batch")}>
           <div className="between"><h3><Icon.batch size={16} /> &nbsp;Batch Payout</h3><Icon.chevR size={16} /></div>
-          <p className="csub" style={{ margin: "8px 0 0" }}>Pay many recipients at once — CSV or saved list.</p>
+          <p className="csub" style={{ margin: "8px 0 0" }}>Pay many recipients at once.</p>
         </button>
         <button className="card" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => nav("/pending")}>
           <div className="between"><h3><Icon.pending size={16} /> &nbsp;Pending Payouts</h3><Icon.chevR size={16} /></div>

@@ -30,6 +30,21 @@ const ALLOWED = FRONTEND_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
 const cidOf = (v) => (v != null && getChain(v) ? Number(v) : DEFAULT_CHAIN_ID);
 const ERC20_ABI = ["function allowance(address,address) view returns (uint256)", "function approve(address,uint256)"];
 
+// Build valid gas-fee fields for ANY chain. Some L2s (e.g. Arbitrum Sepolia) report a
+// max fee far below 1 gwei, so a hardcoded priority-fee fallback would exceed it and make
+// the tx invalid ("priorityFee cannot be more than maxFee"). We derive from getFeeData and
+// ALWAYS keep maxPriorityFeePerGas <= maxFeePerGas; fall back to legacy gasPrice if needed.
+async function feeFields(prov) {
+  const f = await prov.getFeeData().catch(() => ({}));
+  if (f.maxFeePerGas != null) {
+    const maxFee = f.maxFeePerGas * 2n; // headroom for base-fee movement
+    let priority = f.maxPriorityFeePerGas ?? 0n;
+    if (priority > maxFee) priority = maxFee;
+    return { type: 2, maxFeePerGas: maxFee, maxPriorityFeePerGas: priority };
+  }
+  return { type: 0, gasPrice: (f.gasPrice ?? 1000000000n) * 2n }; // legacy chains
+}
+
 const dbMode = initStore();
 const tkEnabled = initTurnkey();
 const mail = initMailer();
@@ -267,15 +282,13 @@ app.post("/api/allowance", wrap(async (req, res) => {
   const token = new ethers.Contract(chain.usdcAddress, ERC20_ABI, prov);
   const cur = await token.allowance(c.treasury.address, chain.diamondAddress).catch(() => 0n);
   if (cur >= ethers.MaxUint256 / 2n) return res.json({ ok: true, already: true });
-  const [onchain, list, fee] = await Promise.all([prov.getTransactionCount(c.treasury.address, "pending"), store.listPayouts(c.subOrgId), prov.getFeeData()]);
+  const data = token.interface.encodeFunctionData("approve", [chain.diamondAddress, ethers.MaxUint256]);
+  const [onchain, list, fees] = await Promise.all([prov.getTransactionCount(c.treasury.address, "pending"), store.listPayouts(c.subOrgId), feeFields(prov)]);
   const reserved = list.filter((p) => ["pending", "submitted"].includes(p.status) && p.nonce != null && cidOf(p.chainId) === cid).map((p) => Number(p.nonce));
   const nonce = Math.max(onchain, reserved.length ? Math.max(...reserved) + 1 : 0);
-  const tx = {
-    to: chain.usdcAddress, data: token.interface.encodeFunctionData("approve", [chain.diamondAddress, ethers.MaxUint256]),
-    nonce, chainId: cid, type: 2, value: 0n, gasLimit: 90000n,
-    maxFeePerGas: fee.maxFeePerGas || ethers.parseUnits("1", "gwei"),
-    maxPriorityFeePerGas: fee.maxPriorityFeePerGas || ethers.parseUnits("1", "gwei"),
-  };
+  let gasLimit = 120000n; // per-chain estimate (Arbitrum needs more than a fixed 90k)
+  try { gasLimit = (await prov.estimateGas({ from: c.treasury.address, to: chain.usdcAddress, data, value: 0n })) * 12n / 10n; } catch { /* keep fallback */ }
+  const tx = { to: chain.usdcAddress, data, nonce, chainId: cid, value: 0n, gasLimit, ...fees };
   const unsigned = ethers.Transaction.from(tx).unsignedSerialized.slice(2);
   const signed = await rootSignTx({ rootKey: c.treasury.rootKey, address: c.treasury.address, unsignedTransaction: unsigned });
   const sent = await prov.broadcastTransaction(signed);
