@@ -32,10 +32,10 @@ export function newTargetKey() {
 }
 
 // Step 2 (after backend returns credentialBundle): decrypt → session key → client → persist.
-export function establishSession({ credentialBundle, ephemeralPrivateKey, subOrgId, address, email, role, name, threshold, chainId, baseUrl, sessionSeconds = 43200 }) {
+export function establishSession({ credentialBundle, ephemeralPrivateKey, subOrgId, address, email, role, name, threshold, memberCount, chainId, baseUrl, sessionSeconds = 43200 }) {
   const sessionPrivateKey = decryptCredentialBundle(credentialBundle, ephemeralPrivateKey);
   const sessionPublicKey = toHex(getPublicKey(sessionPrivateKey, true)); // compressed hex
-  _session = { subOrgId, address, email, role, name, threshold, chainId, sessionPublicKey, sessionPrivateKey, baseUrl, expiry: Date.now() + sessionSeconds * 1000 };
+  _session = { subOrgId, address, email, role, name, threshold, memberCount, chainId, sessionPublicKey, sessionPrivateKey, baseUrl, expiry: Date.now() + sessionSeconds * 1000 };
   _client = buildClient(_session);
   try { localStorage.setItem(SKEY, JSON.stringify(_session)); } catch { /* ignore */ }
   return _session;

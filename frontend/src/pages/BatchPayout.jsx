@@ -11,7 +11,7 @@ import { short, fmtAmount } from "../lib/format.js";
 // N-of-M payout with a CONSECUTIVE nonce, grouped as one batch to co-sign in one click.
 export default function BatchPayout() {
   const nav = useNavigate();
-  const { balances, symbol, recipients, busy, runBatch, threshold, members } = useOrg();
+  const { balances, symbol, recipients, busy, runBatch, threshold, signerCount } = useOrg();
 
   const [view, setView] = useState("build"); // build | run
   const [rows, setRows] = useState([]); // {id, address, amount, label, valid, errors, acct}
@@ -27,7 +27,6 @@ export default function BatchPayout() {
   const ridRef = useRef(0);
   const nextId = () => `r${++ridRef.current}`;
   const willPropose = threshold > 1;
-  const signerCount = members.filter((m) => m.status === "active").length;
 
   function mkRow(address, amount, label) {
     const errors = [];

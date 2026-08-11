@@ -18,12 +18,23 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { Turnkey } from "@turnkey/sdk-server";
 import { generateP256KeyPair } from "@turnkey/crypto";
+import { ethers } from "ethers";
+import { allDiamonds } from "./chains.mjs";
 
 const ETH_ACCOUNT = { curve: "CURVE_SECP256K1", pathFormat: "PATH_FORMAT_BIP32", path: "m/44'/60'/0'/0/0", addressFormat: "ADDRESS_FORMAT_ETHEREUM" };
 export const ACTIVITY = {
   SPEND: "ACTIVITY_TYPE_SIGN_TRANSACTION_V2",
   READ: "ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2",
   APPROVE: "ACTIVITY_TYPE_APPROVE_ACTIVITY",
+};
+
+// FUND-shaped calldata that ANY single admin may sign (1-of-M) — these are FUND-NEUTRAL:
+// they move value into the treasury's OWN confidential balance or register its account.
+// They can never send funds out, so gating them at N-of-M is pure friction. Everything
+// else (withdraw/transfer/… → SPEND) stays N-of-M. Validated in spike/deposit-policy-probe2.
+const SELECTOR = {
+  deposit: ethers.id("deposit(address,uint256)").slice(0, 10),               // 0x47e7ef24
+  createAccount: ethers.id("createConfidentialAccount(bytes)").slice(0, 10), // 0x3ee60d15
 };
 
 let parent = null;
@@ -61,12 +72,22 @@ const userIdsOf = (r) => r?.activity?.result?.createUsersResult?.userIds || [];
 const policyIdOf = (r) => r?.activity?.result?.createPolicyResult?.policyId;
 const userRow = (email, name) => ({ userName: name || email, userEmail: email, apiKeys: [], authenticators: [], oauthProviders: [], userTags: [] });
 
+// The FUND policy condition: a single admin (>=1) may sign a fund-neutral call
+// (deposit OR createConfidentialAccount) to ANY known chain diamond. Anything else —
+// a spend, or the same selector to an unknown contract — falls through to SPEND (N-of-M).
+function fundCondition() {
+  const sels = `eth.tx.data[0..10] == '${SELECTOR.deposit}' || eth.tx.data[0..10] == '${SELECTOR.createAccount}'`;
+  const tos = allDiamonds().map((d) => `eth.tx.to == '${d.toLowerCase()}'`).join(" || ");
+  return `activity.type == '${ACTIVITY.SPEND}' && (${sels}) && (${tos})`;
+}
+
 async function makePolicies(root, subOrgId, threshold) {
-  const mk = (name, consensus, type) =>
+  const mkType = (name, consensus, type) =>
     root.createPolicy({ organizationId: subOrgId, policyName: name, effect: "EFFECT_ALLOW", consensus, condition: `activity.type == '${type}'`, notes: "modelb" });
-  const spend = await mk(`SPEND ${threshold}-of-N`, `approvers.count() >= ${threshold}`, ACTIVITY.SPEND);
-  await mk("READ 1-of-N", "approvers.count() >= 1", ACTIVITY.READ);
-  await mk("APPROVALS", "approvers.count() >= 1", ACTIVITY.APPROVE);
+  const spend = await mkType(`SPEND ${threshold}-of-N`, `approvers.count() >= ${threshold}`, ACTIVITY.SPEND);
+  await mkType("READ 1-of-N", "approvers.count() >= 1", ACTIVITY.READ);
+  await mkType("APPROVALS", "approvers.count() >= 1", ACTIVITY.APPROVE);
+  await root.createPolicy({ organizationId: subOrgId, policyName: "FUND 1-of-N", effect: "EFFECT_ALLOW", consensus: "approvers.count() >= 1", condition: fundCondition(), notes: "modelb-fund" });
   return policyIdOf(spend);
 }
 
@@ -128,6 +149,18 @@ export async function otpVerify({ rootKey, otpId, otpCode, targetPublicKey, sess
   });
   const r = res?.activity?.result?.otpAuthResult || {};
   return { credentialBundle: r.credentialBundle, userId: r.userId, apiKeyId: r.apiKeyId };
+}
+
+// Sign a raw Ethereum tx with the treasury's BACKEND ROOT key. Root bypasses the N-of-M
+// SPEND policy, so this is used ONLY for a fixed, fund-neutral op the backend fully
+// controls: the one-time USDC→diamond allowance approve (spender is hard-coded to the
+// diamond, so it can't be abused to approve an attacker). Never used to move funds out.
+export async function rootSignTx({ rootKey, address, unsignedTransaction }) {
+  const root = rootClient(rootKey);
+  const r = await root.signTransaction({ organizationId: rootKey.subOrgId, signWith: address, type: "TRANSACTION_TYPE_ETHEREUM", unsignedTransaction });
+  const signed = r?.activity?.result?.signTransactionResult?.signedTransaction;
+  if (!signed) throw new Error(`root signTransaction not completed (${r?.activity?.status})`);
+  return signed.startsWith("0x") ? signed : `0x${signed}`;
 }
 
 // Read a Turnkey activity (payout consensus status: who approved, completed?, the signed tx).

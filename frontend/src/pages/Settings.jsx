@@ -4,11 +4,12 @@ import { Icon } from "../components/Icons.jsx";
 import { short } from "../lib/format.js";
 
 export default function Settings() {
-  const { treasury, cfg, members, threshold, saveName, setThreshold, logout, busy } = useOrg();
+  const { treasury, cfg, members, threshold, payouts, saveName, setThreshold, logout, busy } = useOrg();
   const [name, setName] = useState("");
   const [th, setTh] = useState(threshold);
   const isOwner = treasury?.role === "owner";
   const signers = members.filter((m) => m.status === "active");
+  const pendingCount = payouts.filter((p) => p.status === "pending").length;
 
   useEffect(() => { setName(treasury?.name || ""); setTh(threshold); }, [treasury, threshold]);
 
@@ -30,9 +31,10 @@ export default function Settings() {
             {Array.from({ length: signers.length }).map((_, i) => <option key={i + 1} value={i + 1}>{i + 1}</option>)}
           </select>
           <span className="muted">of {signers.length} co-signer{signers.length === 1 ? "" : "s"} must approve</span>
-          {isOwner && th !== threshold && <button className="btn primary sm" disabled={busy} onClick={() => setThreshold(th)}>Update to {th}-of-{signers.length}</button>}
+          {isOwner && th !== threshold && <button className="btn primary sm" disabled={busy || pendingCount > 0} onClick={() => setThreshold(th)}>Update to {th}-of-{signers.length}</button>}
         </div>
         {!isOwner && <p className="hint" style={{ marginTop: 10 }}>Only the owner can change the threshold.</p>}
+        {isOwner && pendingCount > 0 && <p className="hint" style={{ marginTop: 10, color: "var(--warn)" }}>Resolve the {pendingCount} pending payout{pendingCount === 1 ? "" : "s"} first — changing the threshold now would retroactively change how many approvals they need.</p>}
         {th > 1 && signers.length < th && <p className="hint" style={{ marginTop: 10, color: "var(--warn)" }}>Add more co-signers on the Team page first.</p>}
       </div>
 

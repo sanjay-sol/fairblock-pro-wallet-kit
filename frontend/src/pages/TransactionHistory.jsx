@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
 import { useOrg } from "../state/OrgContext.jsx";
 import { Icon } from "../components/Icons.jsx";
-import { EmptyState, StatusBadge, KindBadge } from "../components/ui.jsx";
+import { EmptyState, StatusBadge, KindBadge, ChainBadge } from "../components/ui.jsx";
 import { short, fmtAmount, fmtDate } from "../lib/format.js";
+import { explorerTx } from "../networks.js";
 
 export default function TransactionHistory() {
-  const { payouts, cfg } = useOrg();
+  const { payouts } = useOrg();
   const [status, setStatus] = useState("all");
   const [q, setQ] = useState("");
 
@@ -32,16 +33,17 @@ export default function TransactionHistory() {
         <div className="card"><EmptyState icon={<Icon.history size={24} />} title="No activity yet">Payouts and deposits will appear here.</EmptyState></div>
       ) : (
         <div className="table-wrap"><table>
-          <thead><tr><th>Type</th><th>Recipient</th><th>Amount</th><th>Delivery</th><th>Status</th><th>Tx</th><th>When</th></tr></thead>
+          <thead><tr><th>Type</th><th>Recipient</th><th>Amount</th><th>Network</th><th>Delivery</th><th>Status</th><th>Tx</th><th>When</th></tr></thead>
           <tbody>
             {filtered.map((t) => (
               <tr key={t.id}>
                 <td><KindBadge kind={t.kind} /></td>
                 <td>{t.recipientLabel || ""}<div className="mono muted" style={{ fontSize: 12 }}>{short(t.recipient)}</div></td>
                 <td className="nowrap">{t.kind === "deposit" ? "+" : "−"}{fmtAmount(t.amount, t.tokenSymbol)}</td>
+                <td><ChainBadge chainId={t.chainId} /></td>
                 <td>{t.delivery === "confidential" ? <span className="badge brand">Confidential</span> : <span className="badge">Direct</span>}</td>
                 <td><StatusBadge status={t.status} /></td>
-                <td>{t.txHash ? <a className="mono muted" href={`${cfg?.explorerUrl}/tx/${t.txHash}`} target="_blank" rel="noreferrer">{short(t.txHash)}</a> : t.error ? <span className="badge err" title={t.error}>error</span> : "—"}</td>
+                <td>{t.txHash ? <a className="mono muted" href={t.explorerUrl || explorerTx(t.chainId, t.txHash)} target="_blank" rel="noreferrer">{short(t.txHash)}</a> : t.error ? <span className="badge err" title={t.error}>error</span> : "—"}</td>
                 <td className="muted nowrap">{fmtDate(t.createdAt)}</td>
               </tr>
             ))}

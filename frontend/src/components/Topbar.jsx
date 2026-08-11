@@ -6,18 +6,44 @@ import { short, secsToClock, countdown } from "../lib/format.js";
 import { getTheme, toggleTheme } from "../lib/theme.js";
 
 const TITLES = {
-  "/": "Dashboard", "/single": "Single Payout", "/fund": "Fund Wallet", "/analytics": "Analytics",
+  "/": "Dashboard", "/single": "Single Payout", "/batch": "Batch Payout", "/fund": "Fund Wallet", "/analytics": "Analytics",
   "/pending": "Pending Payouts", "/history": "Transaction History", "/team": "Team", "/settings": "Settings",
 };
+
+// Real-time network switcher — the treasury wallet is the same address on every EVM chain;
+// switching re-points the confidential SDK + provider at the selected chain (task 5).
+function NetworkPicker() {
+  const { networks, chainId, network, switchNetwork, busy } = useOrg();
+  const [open, setOpen] = useState(false);
+  if (!networks?.length) return null;
+  return (
+    <div className="netpick">
+      <span className="chainpill" onClick={() => setOpen((o) => !o)} title="Switch network"><span className="netdot" /> {network?.name || "Network"} <Icon.chevR size={12} /></span>
+      {open && (
+        <>
+          <div style={{ position: "fixed", inset: 0, zIndex: 190 }} onClick={() => setOpen(false)} />
+          <div className="netmenu">
+            {networks.map((n) => (
+              <button key={n.chainId} className={`netitem ${n.chainId === chainId ? "active" : ""}`} disabled={busy} onClick={() => { setOpen(false); switchNetwork(n.chainId); }}>
+                <span className="netdot" style={{ opacity: n.chainId === chainId ? 1 : 0.35 }} />
+                <span className="nn">{n.name}</span>
+                <span className="nc">{n.chainId}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 export default function Topbar() {
   const nav = useNavigate();
   const { pathname } = useLocation();
-  const { treasury, session, now, network, threshold, members } = useOrg();
+  const { treasury, session, now, threshold, signerCount } = useOrg();
   const title = TITLES[pathname] || "Stabletrust Pro";
   const [theme, setTheme] = useState(getTheme());
   const secs = session?.expiry ? countdown(session.expiry, now) : 0;
-  const signerCount = members.filter((m) => m.status === "active").length;
 
   return (
     <div className="topbar">
@@ -27,7 +53,7 @@ export default function Topbar() {
 
       <button className="iconbtn" onClick={() => setTheme(toggleTheme())} title={theme === "dark" ? "Light" : "Dark"}>{theme === "dark" ? <Icon.sun size={17} /> : <Icon.moon size={17} />}</button>
 
-      <span className="chainpill" title="Network"><span className="netdot" /> {network?.name || "Base Sepolia"}</span>
+      <NetworkPicker />
 
       <span className="btn sm" title={`Payouts require ${threshold} of ${signerCount} approvals`}>
         <Icon.shield size={15} /> {threshold}-of-{signerCount}

@@ -9,7 +9,7 @@ import { short, fmtAmount } from "../lib/format.js";
 
 export default function SinglePayout() {
   const nav = useNavigate();
-  const { balances, symbol, recipients, proposePayout, threshold, members, busy, treasury } = useOrg();
+  const { balances, symbol, recipients, proposePayout, threshold, signerCount, busy, treasury } = useOrg();
   const [step, setStep] = useState(0);
   const [recipMode, setRecipMode] = useState(recipients.length ? "known" : "address");
   const [recipId, setRecipId] = useState(recipients[0]?.id || "");
@@ -25,7 +25,6 @@ export default function SinglePayout() {
   const validAddr = recipient && ethers.isAddress(recipient);
   const validAmt = Number(amount) > 0;
   const enough = Number(amount) <= Number(balances.confidential.available);
-  const signerCount = members.filter((m) => m.status === "active").length;
   const willPropose = threshold > 1;
 
   useEffect(() => {

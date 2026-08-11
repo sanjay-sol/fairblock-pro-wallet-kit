@@ -110,27 +110,22 @@ function withTimeout(promise, ms, label) {
 const OP_TIMEOUT = 150_000; // deposits/transfers incl. the ~30–90s finalization wait
 const APPROVE_TIMEOUT = 60_000;
 
-// Make sure the confidential contract is approved to pull `amount` of the token,
-// and — crucially — that the new allowance is READABLE before we deposit. Public
-// testnet RPCs are load-balanced, so a fresh approve isn't always visible on the
-// next request; the SDK's deposit then estimateGas-reverts with
-// "transfer amount exceeds allowance". We approve here and poll until it sticks.
-async function ensureAllowance(signer, tokenAddress, amount) {
-  const token = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
-  const owner = await signer.getAddress();
-  const spender = _cfg.diamondAddress;
-  if ((await token.allowance(owner, spender)) >= amount) return;
-  const tx = await withTimeout(token.approve(spender, ethers.MaxUint256), APPROVE_TIMEOUT, "Approval");
-  await withTimeout(tx.wait(), APPROVE_TIMEOUT, "Approval confirmation");
-  for (let i = 0; i < 12; i++) {
+// Model B: the USDC→diamond allowance is set SERVER-SIDE by the treasury's backend-root
+// key (spender hard-coded to the diamond) BEFORE we deposit — so a deposit is a SINGLE
+// 1-of-M call with no client-side approve to co-sign. Here we only WAIT (read-only) until
+// that allowance is visible on the RPC replica we read from (public testnet RPCs are
+// load-balanced, so a just-mined approve isn't instantly visible everywhere). We never
+// approve here; if it never appears we still let the deposit proceed (the SDK re-checks).
+async function ensureAllowanceVisible(owner, tokenAddress, amount) {
+  const token = new ethers.Contract(tokenAddress, ERC20_ABI, readProvider());
+  for (let i = 0; i < 16; i++) {
     try {
-      if ((await token.allowance(owner, spender)) >= amount) return;
+      if ((await token.allowance(owner, _cfg.diamondAddress)) >= amount) return;
     } catch {
       /* transient RPC read — keep polling */
     }
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 1200));
   }
-  // fall through — the deposit itself is retried below
 }
 
 // Retry ONLY a pre-send estimateGas failure caused by a stale allowance on a
@@ -157,7 +152,7 @@ export async function deposit(signer, token, amountStr) {
   const t = normToken(token);
   const amount = ethers.parseUnits(String(amountStr), t.decimals);
   await withTimeout(client().ensureAccount(signer), OP_TIMEOUT, "Account check");
-  await ensureAllowance(signer, t.address, amount); // approve + wait until visible (own timeout)
+  await ensureAllowanceVisible(await signer.getAddress(), t.address, amount); // backend-root already approved; just wait until visible
   return await withTimeout(
     withDepositRetry(() => client().confidentialDeposit(signer, t.address, amount)),
     OP_TIMEOUT,

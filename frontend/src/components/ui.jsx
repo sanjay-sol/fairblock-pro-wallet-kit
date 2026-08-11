@@ -1,6 +1,14 @@
 import { useState } from "react";
 import { Icon } from "./Icons.jsx";
 import { useOrg } from "../state/OrgContext.jsx";
+import { getNetwork } from "../networks.js";
+
+// Small chain tag for a payout's chainId (payouts can span chains). Renders the short name.
+export function ChainBadge({ chainId }) {
+  const n = getNetwork(chainId);
+  if (!n) return null;
+  return <span className="badge" title={n.name}>{n.shortName}</span>;
+}
 
 // A small inline spinner (inherits currentColor).
 export function Spinner({ size = 14 }) {

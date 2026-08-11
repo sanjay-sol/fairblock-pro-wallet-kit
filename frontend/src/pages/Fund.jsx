@@ -6,10 +6,10 @@ import { explorerAddress } from "../config.js";
 import { fmtAmount } from "../lib/format.js";
 
 export default function Fund() {
-  const { treasury, cfg, balances, nativeBalance, symbol, nativeSymbol, refreshBalances, busy } = useOrg();
+  const { treasury, cfg, chainId, balances, nativeBalance, symbol, nativeSymbol, refreshBalances, busy } = useOrg();
   const gasFaucets = cfg?.gasFaucets || [];
   const tokenFaucets = cfg?.tokenFaucets || [];
-  const addrLink = explorerAddress(treasury?.address);
+  const addrLink = explorerAddress(chainId, treasury?.address);
 
   return (
     <div className="page narrow">

@@ -1,6 +1,6 @@
 import { useOrg } from "../state/OrgContext.jsx";
 import { Icon } from "../components/Icons.jsx";
-import { EmptyState, AsyncButton } from "../components/ui.jsx";
+import { EmptyState, AsyncButton, ChainBadge } from "../components/ui.jsx";
 import { short, fmtAmount, fmtDate } from "../lib/format.js";
 
 const Dots = ({ total, count }) => (
@@ -8,11 +8,10 @@ const Dots = ({ total, count }) => (
 );
 
 export default function PendingPayouts() {
-  const { payouts, approvePayout, approveBatch, rejectPayout, threshold, members, session, treasury, busy } = useOrg();
+  const { payouts, approvePayout, approveBatch, rejectPayout, threshold, signerCount, session, treasury, busy } = useOrg();
   const pending = payouts.filter((p) => p.status === "pending");
   const myEmail = (session?.email || "").toLowerCase();
   const canApprove = treasury?.role === "owner" || treasury?.role === "admin";
-  const signerCount = members.filter((m) => m.status === "active").length;
   const has = (p) => (p.approvals || []).map((a) => String(a).toLowerCase()).includes(myEmail);
 
   const batches = {}; const singles = [];
@@ -36,7 +35,7 @@ export default function PendingPayouts() {
               <div key={bid} className="card">
                 <div className="between" style={{ flexWrap: "wrap", gap: 12 }}>
                   <div>
-                    <div className="flex" style={{ gap: 8, alignItems: "center" }}><span className="badge brand">Batch</span><b style={{ fontSize: 16 }}>{list.length} payments</b><span className="muted">· {fmtAmount(total, list[0].tokenSymbol)}</span></div>
+                    <div className="flex" style={{ gap: 8, alignItems: "center" }}><span className="badge brand">Batch</span><b style={{ fontSize: 16 }}>{list.length} payments</b><span className="muted">· {fmtAmount(total, list[0].tokenSymbol)}</span><ChainBadge chainId={list[0].chainId} /></div>
                     <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Proposed by {list[0].createdByName || list[0].createdBy} · {fmtDate(list[0].createdAt)}</div>
                   </div>
                   <div style={{ textAlign: "right" }}>
@@ -66,7 +65,7 @@ export default function PendingPayouts() {
               <div key={p.id} className="card">
                 <div className="between" style={{ flexWrap: "wrap", gap: 12 }}>
                   <div>
-                    <div className="flex" style={{ gap: 8 }}><b style={{ fontSize: 17 }}>{fmtAmount(p.amount, p.tokenSymbol)}</b><span className="badge brand">{p.delivery === "confidential" ? "Confidential" : "Direct"}</span></div>
+                    <div className="flex" style={{ gap: 8 }}><b style={{ fontSize: 17 }}>{fmtAmount(p.amount, p.tokenSymbol)}</b><span className="badge brand">{p.delivery === "confidential" ? "Confidential" : "Direct"}</span><ChainBadge chainId={p.chainId} /></div>
                     <div className="muted" style={{ fontSize: 12.5, marginTop: 4 }}>→ {p.recipientLabel ? `${p.recipientLabel} · ` : ""}<span className="mono">{short(p.recipient)}</span></div>
                     <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Proposed by {p.createdByName || p.createdBy} · {fmtDate(p.createdAt)}{p.note ? ` · ${p.note}` : ""}</div>
                   </div>

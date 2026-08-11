@@ -7,7 +7,7 @@ import { short, fmtAmount, fmtUsd, fmtDate } from "../lib/format.js";
 
 export default function Dashboard() {
   const nav = useNavigate();
-  const { treasury, balances, nativeBalance, symbol, nativeSymbol, network, payouts, analytics, busy, threshold, members, activateTreasury, depositToConfidential, refreshBalances } = useOrg();
+  const { treasury, balances, nativeBalance, symbol, nativeSymbol, network, payouts, analytics, busy, threshold, signerCount, activateTreasury, depositToConfidential, refreshBalances, reloadPayouts } = useOrg();
   const [depAmt, setDepAmt] = useState("100");
 
   const hasGas = Number(nativeBalance) > 0;
@@ -16,7 +16,7 @@ export default function Dashboard() {
   const needsFunding = !hasGas || (!hasToken && !hasConfidential);
   const recent = payouts.slice(0, 6);
   const pending = payouts.filter((p) => p.status === "pending").length;
-  const signerCount = members.filter((m) => m.status === "active").length;
+  const refreshAll = async () => { await reloadPayouts(); await refreshBalances(); };
 
   return (
     <div className="page">
@@ -49,7 +49,7 @@ export default function Dashboard() {
           <div className="flex wrap" style={{ marginTop: 16 }}>
             <button className="btn sm" onClick={() => nav("/fund")}><Icon.receive size={14} /> Deposit</button>
             {!treasury.activated && <AsyncButton className="btn sm primary" onClick={activateTreasury} disabled={busy} loadingText="Deriving…"><Icon.shield size={14} /> Derive confidential keys</AsyncButton>}
-            <AsyncButton className="btn sm ghost" onClick={() => refreshBalances()} disabled={busy}><Icon.refresh size={14} /> Refresh</AsyncButton>
+            <AsyncButton className="btn sm ghost" onClick={refreshAll} disabled={busy}><Icon.refresh size={14} /> Refresh</AsyncButton>
           </div>
         </div>
 
@@ -62,7 +62,7 @@ export default function Dashboard() {
             <AsyncButton className="btn primary" style={{ flex: "0 0 auto" }} disabled={busy || !treasury.activated || !(Number(depAmt) > 0)} onClick={() => depositToConfidential(depAmt)} loadingText="Depositing…"><Icon.download size={15} /> Deposit</AsyncButton>
           </div>
           {!treasury.activated && <p className="hint" style={{ marginTop: 10 }}>Derive your confidential keys first.</p>}
-          {threshold > 1 && <p className="hint" style={{ marginTop: 10 }}>Tip: activate + fund while the treasury is <b>1-of-1</b>, then raise the approval threshold for payouts.</p>}
+          {threshold > 1 && <p className="hint" style={{ marginTop: 10 }}>Any single admin can fund the pool (deposits are <b>1-of-{signerCount}</b>). Only payouts require <b>{threshold}-of-{signerCount}</b> co-signing.</p>}
         </div>
       </div>
 
@@ -73,10 +73,14 @@ export default function Dashboard() {
         <Stat k="Pending approvals" icon="pending">{pending}</Stat>
       </div>
 
-      <div className="card-row cols-2" style={{ marginBottom: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 14, marginBottom: 16 }}>
         <button className="card" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => nav("/single")}>
           <div className="between"><h3><Icon.single size={16} /> &nbsp;Single Payout</h3><Icon.chevR size={16} /></div>
           <p className="csub" style={{ margin: "8px 0 0" }}>Send (or propose) a confidential payment.</p>
+        </button>
+        <button className="card" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => nav("/batch")}>
+          <div className="between"><h3><Icon.batch size={16} /> &nbsp;Batch Payout</h3><Icon.chevR size={16} /></div>
+          <p className="csub" style={{ margin: "8px 0 0" }}>Pay many recipients at once — CSV or saved list.</p>
         </button>
         <button className="card" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => nav("/pending")}>
           <div className="between"><h3><Icon.pending size={16} /> &nbsp;Pending Payouts</h3><Icon.chevR size={16} /></div>
