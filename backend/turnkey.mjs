@@ -152,9 +152,11 @@ export async function otpVerify({ rootKey, otpId, otpCode, targetPublicKey, sess
 }
 
 // Sign a raw Ethereum tx with the treasury's BACKEND ROOT key. Root bypasses the N-of-M
-// SPEND policy, so this is used ONLY for a fixed, fund-neutral op the backend fully
-// controls: the one-time USDC→diamond allowance approve (spender is hard-coded to the
-// diamond, so it can't be abused to approve an attacker). Never used to move funds out.
+// SPEND policy, so it is used ONLY for fixed, FUND-NEUTRAL ops the backend fully controls:
+//   1. the one-time USDC→diamond allowance approve (spender hard-coded to the diamond);
+//   2. a 0-value self-transfer to clear a DEAD nonce left by a rejected/failed payout, so the
+//      approved payouts queued behind it can settle (server.mjs → fillNonceGap).
+// Both move NO funds out of the treasury. Never used to sign a value/withdraw/transfer.
 export async function rootSignTx({ rootKey, address, unsignedTransaction }) {
   const root = rootClient(rootKey);
   const r = await root.signTransaction({ organizationId: rootKey.subOrgId, signWith: address, type: "TRANSACTION_TYPE_ETHEREUM", unsignedTransaction });

@@ -57,7 +57,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             <div className="wn">{session?.email || "signed in"}</div>
             <div className="we"><span className={`badge ${treasury?.role === "owner" ? "owner" : "ok"}`} style={{ textTransform: "capitalize" }}>{treasury?.role || "member"}</span></div>
           </div>
-          <button className="out" title="Sign out" onClick={logout}><Icon.logout size={16} /></button>
+          <button className="out" title="Sign out" onClick={() => logout()}><Icon.logout size={16} /></button>
         </div>
       </div>
     </aside>

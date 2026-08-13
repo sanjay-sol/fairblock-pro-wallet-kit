@@ -103,7 +103,7 @@ export default function SinglePayout() {
       {step === 1 && (
         <div className="card">
           <h3>Preview & Confirm</h3>
-          <p className="csub">{willPropose ? `This treasury requires ${threshold} of ${signerCount} approvals — this will be proposed for your team to co-sign.` : "You're the sole signer — this settles immediately."}</p>
+          <p className="csub">{willPropose ? `This treasury requires ${threshold} of ${signerCount} approvals.` : "You're the sole signer - this settles immediately."}</p>
           <div className="table-wrap" style={{ marginBottom: 18 }}><table><tbody>
             <tr><td className="muted">Recipient</td><td className="right">{recipientLabel ? `${recipientLabel} · ` : ""}<span className="mono">{short(recipient)}</span></td></tr>
             <tr><td className="muted">Amount</td><td className="right"><b>{fmtAmount(amount, symbol)}</b></td></tr>

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App.jsx";
 import { OrgProvider } from "./state/OrgContext.jsx";
+import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import { initTheme } from "./lib/theme.js";
 import "./styles.css";
 
@@ -11,9 +12,11 @@ import "./styles.css";
 initTheme();
 
 createRoot(document.getElementById("root")).render(
-  <BrowserRouter>
-    <OrgProvider>
-      <App />
-    </OrgProvider>
-  </BrowserRouter>,
+  <ErrorBoundary>
+    <BrowserRouter>
+      <OrgProvider>
+        <App />
+      </OrgProvider>
+    </BrowserRouter>
+  </ErrorBoundary>,
 );

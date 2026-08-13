@@ -38,7 +38,7 @@ export default function Onboard() {
       <div className="box">
         <img className="logo-lg" src="/Logo.png" alt="Stabletrust Pro" />
         <h1>{cfg?.appName || "Stabletrust Pro"}</h1>
-        <p className="hint" style={{ marginTop: -4 }}>Confidential, co-managed treasury payouts on Fairblock.</p>
+        <p className="hint" style={{ marginTop: -4 }}>Confidential treasury payouts on Fairblock.</p>
 
         {!pending ? (
           <div className="card" style={{ textAlign: "left", marginTop: 8 }}>
@@ -49,7 +49,7 @@ export default function Onboard() {
             {mode === "create" && (
               <>
                 <label className="fld">Treasury name</label>
-                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme Finance" />
+                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Example Treasury" />
                 <label className="fld" style={{ marginTop: 10 }}>Your name</label>
                 <input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="Jane Doe" />
               </>

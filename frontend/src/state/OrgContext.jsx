@@ -43,6 +43,9 @@ export function OrgProvider({ children }) {
   const [payouts, setPayouts] = useState([]);
   const [recipients, setRecipients] = useState([]);
   const [analytics, setAnalytics] = useState(null);
+  // A batch run lives HERE (not in the BatchPayout page) so it survives navigation: the
+  // loop keeps going + progress is preserved even if you leave and come back (task 2).
+  const [activeBatch, setActiveBatch] = useState(null); // { id, delivery, willPropose, rows[], progress{i}, running, done, startedAt }
 
   const [toasts, setToasts] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -56,12 +59,19 @@ export function OrgProvider({ children }) {
   const treasuryRef = useRef(null);
   const vaultRef = useRef(null);     // { address, elgamal: { [chainId]: priv } } — per-chain keys
   const settledRef = useRef(null);   // count of settled payouts last seen → detect new settlements
+  const activeBatchRef = useRef(null); // mirror of activeBatch for the fire-and-forget batch loop
+  const treasurySyncRef = useRef(0);   // last time we re-read the treasury (throttles team/threshold sync)
+  const kickedRef = useRef(false);     // set when the API says we're no longer a member → force logout
 
   useEffect(() => { treasuryRef.current = treasury; }, [treasury]);
+  useEffect(() => { activeBatchRef.current = activeBatch; }, [activeBatch]);
 
   const toast = useCallback((msg, kind = "info") => {
+    // Defensive: only ever render a string. A stray object (e.g. a click event
+    // accidentally passed in as the message) would throw in React and blank the app.
+    const text = typeof msg === "string" ? msg : (msg && typeof msg.message === "string" ? msg.message : String(msg ?? ""));
     const id = `${Date.now()}-${Math.random()}`;
-    setToasts((t) => [...t, { id, msg, kind }]);
+    setToasts((t) => [...t, { id, msg: text, kind }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === "error" ? 7000 : 4200);
   }, []);
 
@@ -96,8 +106,14 @@ export function OrgProvider({ children }) {
     try {
       const t = await api.getTreasury();
       setMembers(t.members || []);
-      setTreasury((cur) => cur ? { ...cur, name: t.name, threshold: t.threshold, role: t.role, memberCount: t.memberCount } : cur);
-    } catch (e) { console.warn("reloadTreasury:", e?.message || e); }
+      // Only produce a new treasury object when a field actually changed — otherwise the 20s
+      // team-sync would churn a re-render (and reset the poll interval) on every tick.
+      setTreasury((cur) => {
+        if (!cur) return cur;
+        if (cur.name === t.name && cur.threshold === t.threshold && cur.role === t.role && cur.memberCount === t.memberCount) return cur;
+        return { ...cur, name: t.name, threshold: t.threshold, role: t.role, memberCount: t.memberCount };
+      });
+    } catch (e) { if (/not a member/i.test(String(e?.message || ""))) kickedRef.current = true; console.warn("reloadTreasury:", e?.message || e); }
   }, []);
   const reloadRecipients = useCallback(async () => {
     try { setRecipients(await api.recipients()); } catch (e) { console.warn("reloadRecipients:", e?.message || e); }
@@ -118,7 +134,7 @@ export function OrgProvider({ children }) {
       const settled = dec.filter((p) => p.status === "completed" || p.status === "submitted").length;
       if (settledRef.current != null && settled > settledRef.current) refreshBalances();
       settledRef.current = settled;
-    } catch (e) { console.warn("reloadPayouts:", e?.message || e); }
+    } catch (e) { if (/not a member/i.test(String(e?.message || ""))) kickedRef.current = true; console.warn("reloadPayouts:", e?.message || e); }
   }, [refreshBalances]);
 
   const loadElgamal = useCallback(async (address, cid) => {
@@ -165,6 +181,17 @@ export function OrgProvider({ children }) {
   }, []);
 
   useEffect(() => { const id = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id); }, []);
+  // Re-read the treasury (threshold, team, name, role) at most once per 20s. The owner sees
+  // their own threshold change instantly, but OTHER admins only had it at mount — so without
+  // this they'd keep a stale "N-of-M" until a full page reload (task 3). Throttled to stay
+  // light on DB reads. `force` (on tab re-focus / first poll) bypasses the throttle.
+  const syncTeam = useCallback((force = false) => {
+    const t = Date.now();
+    if (!force && t - treasurySyncRef.current < 20000) return;
+    treasurySyncRef.current = t;
+    reloadTreasury();
+  }, [reloadTreasury]);
+
   // Poll pending payouts so the consensus view + auto-execute + balance refresh stay live.
   // Read-reduction: SKIP polling while the tab is hidden (huge saver for backgrounded tabs),
   // poll fast only while something is pending, and slowly when idle. Refresh once on re-focus.
@@ -172,11 +199,11 @@ export function OrgProvider({ children }) {
     if (!treasury) return;
     const hasPending = payouts.some((p) => p.status === "pending" || p.status === "submitted");
     const interval = hasPending ? 6000 : 45000;
-    const id = setInterval(() => { if (treasuryRef.current && !document.hidden) reloadPayouts(); }, interval);
-    const onVis = () => { if (!document.hidden && treasuryRef.current) reloadPayouts(); };
+    const id = setInterval(() => { if (treasuryRef.current && !document.hidden) { reloadPayouts(); syncTeam(); } }, interval);
+    const onVis = () => { if (!document.hidden && treasuryRef.current) { reloadPayouts(); syncTeam(true); } };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
-  }, [treasury, payouts, reloadPayouts]);
+  }, [treasury, payouts, reloadPayouts, syncTeam]);
 
   // ── auth ──
   const createTreasury = ({ name, ownerEmail, ownerName, threshold }) =>
@@ -202,17 +229,22 @@ export function OrgProvider({ children }) {
     }, { silent: true });
 
   const logout = useCallback((reason) => {
+    // `reason` is only a message when we call logout() ourselves (e.g. session expiry).
+    // When wired straight to onClick it arrives as a DOM event — ignore anything non-string.
+    const msg = typeof reason === "string" ? reason : null;
     clearSession(); setApiContext({ subOrgId: null, email: null });
     clearVault();
     setTreasury(null); treasuryRef.current = null; vaultRef.current = null; settledRef.current = null;
+    setActiveBatch(null); activeBatchRef.current = null;
     setBalances(EMPTY_BAL); setNativeBalance("0"); setPayouts([]); setRecipients([]); setMembers([]); setAnalytics(null);
-    toast(reason || "Signed out", reason ? "error" : "muted");
+    toast(msg || "Signed out", msg ? "error" : "muted");
   }, [toast]);
 
   // Session-expiry watchdog: when the OTP session lapses, wipe stale state + prompt re-auth
   // (avoids a lingering dashboard showing a dead session's numbers — task 2).
   useEffect(() => {
     if (!treasury) return;
+    if (kickedRef.current) { kickedRef.current = false; logout("You were removed from this treasury"); return; }
     const s = getSession();
     if (s && s.expiry <= now) logout("Session expired — please sign in again");
   }, [now, treasury, logout]);
@@ -221,6 +253,8 @@ export function OrgProvider({ children }) {
   const switchNetwork = useCallback((newChainId) => {
     const cid = Number(newChainId);
     if (cid === cfgRef.current?.chainId) return;
+    // Switching swaps the signer/provider/SDK under any in-flight work — don't do it mid-batch.
+    if (activeBatchRef.current?.running) { toast("Finish the running batch before switching networks", "error"); return; }
     const network = getNetwork(cid);
     if (!network || !backendCfgRef.current) return;
     saveSelectedChainId(cid);
@@ -272,6 +306,7 @@ export function OrgProvider({ children }) {
   const proposePayout = ({ recipient, amount, delivery = "confidential", recipientLabel, note }) =>
     run(`Pay ${amount} ${tokenRef.current?.symbol || ""}`, async () => {
       const cid = cfgRef.current.chainId;
+      if (activeBatchRef.current?.running) throw new Error("A batch payout is still running — let it finish before starting another payout (they'd fight over transaction nonces).");
       if (delivery === "direct" && (treasuryRef.current?.threshold || 1) > 1) throw new Error("Direct-to-wallet isn't supported under multi-sig yet (it needs 2 txns) — use Confidential Settlement.");
       if (delivery === "confidential") { const ok = await isActivated(recipient); if (!ok) throw new Error("recipient has no confidential account — ask them to onboard first"); }
       const { base } = await api.nonce(1, cid); // reserve this payout's nonce on this chain
@@ -289,35 +324,58 @@ export function OrgProvider({ children }) {
 
   // Batch: propose (or, at threshold 1, send) K payouts with CONSECUTIVE nonces on this chain.
   // A failed/skipped row does NOT consume its nonce (so the executor queue never gaps).
-  const runBatch = async (rows, delivery, onProgress) => {
-    const cid = cfgRef.current.chainId;
-    const batchId = `batch_${Date.now().toString(36)}`;
-    const { base } = await api.nonce(rows.length, cid);
-    let nextNonce = base;
-    const results = [];
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
+  //
+  // The run is OWNED BY CONTEXT (not the BatchPayout page): we snapshot it into `activeBatch`
+  // and drive a fire-and-forget loop that writes progress back into that state. This means the
+  // batch keeps running — and its progress stays visible — even if the user navigates away and
+  // back mid-run (task 2). Every row's outcome (completed / proposed / failed) is recorded, so
+  // nothing silently disappears.
+  const setRowProgress = (i, res) => setActiveBatch((b) => (b ? { ...b, progress: { ...b.progress, [i]: res } } : b));
+
+  const startBatch = (inputRows, delivery) => {
+    if (activeBatchRef.current?.running) return; // one batch at a time
+    const rows = inputRows.map((r) => ({ address: r.address, amount: r.amount, label: r.label || null }));
+    const willPropose = (treasuryRef.current?.threshold || 1) > 1;
+    const id = `batch_${Date.now().toString(36)}`;
+    const snapshot = { id, delivery, willPropose, rows, progress: {}, running: true, done: false, startedAt: Date.now() };
+    setActiveBatch(snapshot); activeBatchRef.current = snapshot;
+
+    // Fire-and-forget: not awaited by any component, so unmounting BatchPayout can't stop it.
+    (async () => {
+      const cid = cfgRef.current.chainId;
       try {
-        if (delivery === "direct" && (treasuryRef.current?.threshold || 1) > 1) throw new Error("Direct-to-wallet isn't supported under multi-sig yet — use Confidential");
-        if (delivery === "confidential") { const ok = await isActivated(row.address); if (!ok) throw new Error("recipient has no confidential account"); }
-        let txHash = null, pending = null;
-        setNonceOverride(nextNonce);
-        try { txHash = await executeOnChain({ recipient: row.address, amount: row.amount, delivery, token: row.token }); }
-        catch (e) { pending = takeLastPending(); if (!pending) throw e; }
-        finally { clearNonceOverride(); }
-        await recordPayout({ kind: delivery === "direct" ? "withdraw" : "transfer", recipient: row.address, recipientLabel: row.label || null, amount: row.amount, delivery, nonce: nextNonce, batchId }, pending ? { pending: true, ...pending } : { txHash });
-        const status = pending ? "proposed" : "completed";
-        results.push({ ...row, status, txHash });
-        onProgress?.(i, row, { status, txHash });
-        nextNonce++; // only advance on a recorded payout — failures reuse the nonce (no gap)
+        const { base } = await api.nonce(rows.length, cid);
+        let nextNonce = base;
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          setRowProgress(i, { status: "running" });
+          try {
+            if (delivery === "direct" && willPropose) throw new Error("Direct-to-wallet isn't supported under multi-sig yet — use Confidential");
+            if (delivery === "confidential") { const ok = await isActivated(row.address); if (!ok) throw new Error("recipient has no confidential account"); }
+            let txHash = null, pending = null;
+            setNonceOverride(nextNonce);
+            try { txHash = await executeOnChain({ recipient: row.address, amount: row.amount, delivery }); }
+            catch (e) { pending = takeLastPending(); if (!pending) throw e; }
+            finally { clearNonceOverride(); }
+            await recordPayout({ kind: delivery === "direct" ? "withdraw" : "transfer", recipient: row.address, recipientLabel: row.label || null, amount: row.amount, delivery, nonce: nextNonce, batchId: id }, pending ? { pending: true, ...pending } : { txHash });
+            setRowProgress(i, { status: pending ? "proposed" : "completed", txHash });
+            nextNonce++; // only advance on a recorded payout — failures reuse the nonce (no gap)
+          } catch (e) {
+            setRowProgress(i, { status: "failed", error: friendlyError(e) });
+          }
+        }
       } catch (e) {
-        results.push({ ...row, status: "failed", error: e.message });
-        onProgress?.(i, row, { status: "failed", error: e.message });
+        // Reservation / setup failure before the loop — surface it and mark the batch done.
+        toast(`Batch could not start — ${friendlyError(e)}`, "error");
+      } finally {
+        setActiveBatch((b) => (b && b.id === id ? { ...b, running: false, done: true } : b));
+        await Promise.all([refreshBalances(), reloadPayouts()]).catch(() => {});
       }
-    }
-    await Promise.all([refreshBalances(), reloadPayouts()]);
-    return { batchId, results };
+    })();
   };
+
+  // Clear a FINISHED batch from the dashboard (guarded: never wipe a run in progress).
+  const clearBatch = () => { if (!activeBatchRef.current?.running) { setActiveBatch(null); activeBatchRef.current = null; } };
 
   const approveBatch = (payoutsToApprove) =>
     run(`Approve ${payoutsToApprove.length} payout${payoutsToApprove.length === 1 ? "" : "s"}`, async () => {
@@ -335,6 +393,7 @@ export function OrgProvider({ children }) {
     run(`Deposit ${amount} ${tokenRef.current?.symbol || ""} → confidential`, async () => {
       const tok = tokenRef.current;
       const cid = cfgRef.current.chainId;
+      if (activeBatchRef.current?.running) throw new Error("A batch payout is still running — let it finish before depositing (they'd fight over transaction nonces).");
       await api.ensureAllowance(cid);          // backend-root sets the allowance if needed
       const { base } = await api.nonce(1, cid); // reserve a nonce (won't collide with pending payouts)
       let txHash = null, pending = null;
@@ -374,13 +433,13 @@ export function OrgProvider({ children }) {
     chainId, networks, network, switchNetwork,
     treasury, members, signerCount, role: treasury?.role || null, threshold: treasury?.threshold || 1,
     authed: sessionActive(), session: getSession(),
-    balances, nativeBalance, payouts, recipients, analytics,
+    balances, nativeBalance, payouts, recipients, analytics, activeBatch,
     token, symbol: token?.symbol || "USDC", tokenDecimals: token?.decimals ?? 6, nativeSymbol: cfg?.nativeSymbol || "ETH",
     toasts, busy, busyDesc, toast,
     // auth
     createTreasury, beginOtp, completeOtp, logout,
     // treasury ops
-    activateTreasury, refreshBalances, depositToConfidential, proposePayout, runBatch, approveBatch, approvePayout, rejectPayout,
+    activateTreasury, refreshBalances, depositToConfidential, proposePayout, startBatch, clearBatch, approveBatch, approvePayout, rejectPayout,
     // members
     addMember, removeMember, setThreshold, saveName, addRecipient, removeRecipient, isActivated,
     // reloads

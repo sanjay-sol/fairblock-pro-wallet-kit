@@ -67,7 +67,11 @@ async function ctx(req, res, minRole) {
   const caller = callerOf(req);
   const member = caller ? await store.getMember(subOrgId, caller) : null;
   const role = member?.role || null;
-  if (minRole && (!role || RANK[role] < RANK[minRole])) { res.status(403).json({ error: `requires ${minRole}` }); return null; }
+  // Every treasury endpoint requires the caller to be a CURRENT member. This is what cuts off a
+  // REMOVED member's still-live session — their email is gone from the members list, so they can
+  // no longer read payouts/amounts/team or do anything. `minRole` is an extra gate for writes.
+  if (!member) { res.status(403).json({ error: "not a member of this treasury" }); return null; }
+  if (minRole && RANK[role] < RANK[minRole]) { res.status(403).json({ error: `requires ${minRole}` }); return null; }
   return { subOrgId, treasury, caller, role, member };
 }
 
@@ -154,10 +158,25 @@ app.delete("/api/members/:email", wrap(async (req, res) => {
   const m = await store.getMember(c.subOrgId, email);
   if (!m) return res.status(404).json({ error: "member not found" });
   if (m.role === "owner") return res.status(400).json({ error: "cannot remove the owner" });
+  // Removing a member is LOCKED while ANY payout is pending. Removal deletes their Turnkey user,
+  // which orphans any vote they cast (a payout its creator approved collapses to 0 approvals and can
+  // no longer be signed), and can drop the team below the approval threshold. Keeping the team stable
+  // until all payouts settle or are rejected avoids that whole class of edge cases.
+  const pend = (await store.listPayouts(c.subOrgId)).filter((p) => p.status === "pending");
+  if (pend.length) return res.status(409).json({ error: `Resolve the ${pend.length} pending payout(s) first — you can't remove a member while payouts are awaiting approval.` });
+  const remaining = (await store.listMembers(c.subOrgId)).length - 1; // members left after this removal (owner always stays)
+  const threshold = c.treasury.threshold || 1;
   if (m.userId) await removeMember({ rootKey: c.treasury.rootKey, userId: m.userId }).catch((e) => console.error("[removeMember tk]", e?.message));
   await store.removeMember(c.subOrgId, email);
   await store.emailIndexDel(email);
-  res.json({ ok: true });
+  let newThreshold = threshold;
+  if (threshold > remaining) { // clamp down so it stays valid (owner always remains → remaining >= 1)
+    newThreshold = Math.max(1, remaining);
+    const spendPolicyId = await setThreshold({ rootKey: c.treasury.rootKey, threshold: newThreshold, spendPolicyId: c.treasury.spendPolicyId });
+    await store.updateTreasury(c.subOrgId, { threshold: newThreshold, spendPolicyId });
+    console.log(`[threshold] auto-lowered ${threshold}→${newThreshold} after removing ${email}`);
+  }
+  res.json({ ok: true, threshold: newThreshold, thresholdLowered: newThreshold !== threshold });
 }));
 
 // ── threshold (owner) ──
@@ -167,9 +186,13 @@ app.put("/api/threshold", wrap(async (req, res) => {
   const members = await store.listMembers(c.subOrgId);
   if (!Number.isInteger(threshold) || threshold < 1 || threshold > members.length) return res.status(400).json({ error: `threshold must be 1..${members.length}` });
   // A threshold change swaps the SPEND policy, which Turnkey evaluates LIVE — so it would
-  // retroactively change what already-pending payouts need. Block it until they clear.
+  // retroactively change what already-pending payouts need. Block it until they clear. EXCEPTION:
+  // if the current threshold is already INVALID (> member count — e.g. a member left), a decrease
+  // to a valid value is CORRECTIVE (it only makes stuck payouts reachable), so we allow it.
+  const cur = c.treasury.threshold || 1;
+  const correcting = cur > members.length && threshold < cur;
   const pend = (await store.listPayouts(c.subOrgId)).filter((p) => p.status === "pending");
-  if (pend.length) return res.status(409).json({ error: `Resolve the ${pend.length} pending payout(s) first — changing the threshold now would retroactively change how many approvals they need.` });
+  if (pend.length && !correcting) return res.status(409).json({ error: `Resolve the ${pend.length} pending payout(s) first — changing the threshold now would retroactively change how many approvals they need.` });
   const spendPolicyId = await setThreshold({ rootKey: c.treasury.rootKey, threshold, spendPolicyId: c.treasury.spendPolicyId });
   await store.updateTreasury(c.subOrgId, { threshold, spendPolicyId });
   res.json({ threshold });
@@ -215,37 +238,86 @@ async function enrichPayout(treasury, members, p) {
   return store.updatePayout(treasury.subOrgId, p.id, patch);
 }
 
+const BROADCAST_OK = /already known|nonce too low|replacement|already imported|known transaction|transaction already exists/;
+
+// Clear a DEAD nonce — one reserved by a payout that was rejected (or failed) BEFORE it ever
+// broadcast, so its slot is a permanent hole that blocks every higher-nonce payout behind it.
+// We fill it with a 0-value self-transfer signed by the backend ROOT key. This is fund-neutral
+// (to == the treasury itself — money never leaves), matching rootSignTx's contract; it just
+// advances the account nonce so the approved payouts queued behind the hole can settle.
+// Idempotent: if a prior poll already filled it, "already known / nonce too low" is swallowed.
+async function fillNonceGap(treasury, cid, nonce) {
+  const prov = providerFor(cid); if (!prov) return false;
+  let gasLimit = 21000n;
+  try { gasLimit = (await prov.estimateGas({ from: treasury.address, to: treasury.address, value: 0n })) * 12n / 10n; } catch { /* keep 21000 */ }
+  const fees = await feeFields(prov);
+  const tx = { to: treasury.address, value: 0n, nonce, chainId: cid, gasLimit, ...fees };
+  const unsigned = ethers.Transaction.from(tx).unsignedSerialized.slice(2);
+  const signed = await rootSignTx({ rootKey: treasury.rootKey, address: treasury.address, unsignedTransaction: unsigned });
+  try {
+    const sent = await prov.broadcastTransaction(signed);
+    console.log(`[nonce-gap] chain=${cid} filled dead nonce ${nonce} via self-send ${sent.hash}`);
+  } catch (e) {
+    if (!BROADCAST_OK.test(String(e?.message || "").toLowerCase())) throw e;
+    console.log(`[nonce-gap] chain=${cid} nonce ${nonce} already filled`);
+  }
+  return true;
+}
+
 // Broadcast approved-and-signed payouts STRICTLY in nonce order, PER CHAIN (nonces are
-// independent per chain, so a batch = K consecutive nonces on ONE chain). A gap — e.g. a
-// rejected/failed payout — pauses that chain's queue until it's filled. Idempotent:
-// "already known / nonce too low" just means the tx is already out there.
+// independent per chain, so a batch = K consecutive nonces on ONE chain). We walk the account
+// nonce forward from what the chain expects up to the highest ready payout, and at each slot:
+//   • a ready (approved+signed) payout → broadcast it;
+//   • a DEAD slot (rejected/failed-before-broadcast payout) → fill it so the queue continues;
+//   • a still-pending (unapproved) payout → STOP (it legitimately owns that nonce, wait for it).
+// This is what makes a rejected payout no longer deadlock the ones behind it. Idempotent.
 async function executeReadyPayouts(treasury, list) {
-  const ready = list.filter((p) => p.status === "pending" && p.signedTx && !p.txHash && p.nonce != null);
-  if (!ready.length || executing.has(treasury.subOrgId)) return;
+  if (executing.has(treasury.subOrgId)) return;
+  const byChain = {};
+  for (const p of list) if (p.nonce != null) (byChain[cidOf(p.chainId)] ||= []).push(p);
+  // Only touch chains that actually have an approved-and-signed payout waiting to go out.
+  const chains = Object.entries(byChain).filter(([, items]) => items.some((p) => p.status === "pending" && p.signedTx && !p.txHash));
+  if (!chains.length) return;
   executing.add(treasury.subOrgId);
   try {
-    const byChain = {};
-    for (const p of ready) (byChain[cidOf(p.chainId)] ||= []).push(p);
-    for (const [cid, items] of Object.entries(byChain)) {
+    for (const [cidStr, items] of chains) {
+      const cid = Number(cidStr);
       const prov = providerFor(cid); if (!prov) continue;
-      const sorted = items.sort((a, b) => a.nonce - b.nonce);
+      const maxReady = Math.max(...items.filter((p) => p.status === "pending" && p.signedTx && !p.txHash).map((p) => Number(p.nonce)));
       let expected = await prov.getTransactionCount(treasury.address, "pending");
-      for (const p of sorted) {
-        if (p.nonce < expected) continue;   // already in the mempool / mined
-        if (p.nonce > expected) break;       // a lower nonce isn't ready yet — hold the queue in order
-        const hash = ethers.Transaction.from(p.signedTx).hash;
-        try {
-          await prov.broadcastTransaction(p.signedTx);
-          console.log(`[payout ${p.id}] broadcast chain=${cid} nonce=${p.nonce} ${hash}`);
-        } catch (e) {
-          const m = String(e?.message || "").toLowerCase();
-          if (!/already known|nonce too low|replacement|already imported|known transaction|transaction already exists/.test(m)) {
-            await store.updatePayout(treasury.subOrgId, p.id, { status: "failed", error: e?.message?.slice(0, 180) });
-            break; // couldn't broadcast this nonce → stop (the rest would gap)
+      while (expected <= maxReady) {
+        // A nonce can be REUSED (rejecting a payout frees its nonce for a later proposal), so one
+        // slot may hold several payout rows. Resolve to what that nonce ACTUALLY is, preferring a
+        // live payout over a dead duplicate — never fill a slot a real payout is waiting to use.
+        const here = items.filter((p) => Number(p.nonce) === expected);
+        const ready = here.find((p) => p.status === "pending" && p.signedTx && !p.txHash);
+        const already = here.find((p) => p.txHash);                              // already broadcast/mined at this nonce
+        const liveWait = here.find((p) => p.status === "pending" && !p.signedTx); // still awaiting approval
+        const allDead = here.length > 0 && here.every((p) => !p.txHash && (p.status === "rejected" || p.status === "failed"));
+        if (ready) {
+          const hash = ethers.Transaction.from(ready.signedTx).hash;
+          try {
+            await prov.broadcastTransaction(ready.signedTx);
+            console.log(`[payout ${ready.id}] broadcast chain=${cid} nonce=${expected} ${hash}`);
+          } catch (e) {
+            if (!BROADCAST_OK.test(String(e?.message || "").toLowerCase())) {
+              await store.updatePayout(treasury.subOrgId, ready.id, { status: "failed", error: e?.message?.slice(0, 180) });
+              break; // this nonce won't broadcast → a later poll fills it as a dead slot
+            }
           }
+          await store.updatePayout(treasury.subOrgId, ready.id, { status: "submitted", txHash: hash, explorerUrl: explorerTxFor(cid, hash) });
+          expected++;
+        } else if (already) {
+          expected++; // nonce already spent on-chain — step past it
+        } else if (liveWait) {
+          break; // a lower-nonce payout is still awaiting approval — hold the queue in order
+        } else if (allDead) {
+          const filled = await fillNonceGap(treasury, cid, expected).catch((e) => { console.error(`[nonce-gap ${cid}/${expected}]`, e?.message || e); return false; });
+          if (!filled) break; // couldn't clear the hole this round — retry next poll
+          expected++;
+        } else {
+          break; // unknown hole (no payout row owns this nonce) — wait
         }
-        await store.updatePayout(treasury.subOrgId, p.id, { status: "submitted", txHash: hash, explorerUrl: explorerTxFor(cid, hash) });
-        expected++;
       }
     }
   } finally { executing.delete(treasury.subOrgId); }
@@ -311,6 +383,12 @@ app.get("/api/payouts", wrap(async (req, res) => {
 
 app.post("/api/payouts/:id/rejected", wrap(async (req, res) => {
   const c = await ctx(req, res, "admin"); if (!c) return;
+  const p = await store.getPayout(c.subOrgId, req.params.id);
+  if (!p) return res.status(404).json({ error: "payout not found" });
+  // Only a still-pending payout can be rejected. Once it's broadcast/settled the nonce is spent
+  // on-chain — flipping it to "rejected" would be a lie AND make the executor try to "fill" a
+  // nonce that's already used. (The UI only offers Reject on pending, but guard the API too.)
+  if (p.status !== "pending") return res.status(409).json({ error: `can only reject a pending payout (this one is already ${p.status})` });
   res.json(await store.updatePayout(c.subOrgId, req.params.id, { status: "rejected" }));
 }));
 

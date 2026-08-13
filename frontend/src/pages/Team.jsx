@@ -5,13 +5,15 @@ import { EmptyState } from "../components/ui.jsx";
 import { initialsOf } from "../lib/format.js";
 
 export default function Team() {
-  const { members, treasury, addMember, removeMember, threshold, busy } = useOrg();
+  const { members, treasury, addMember, removeMember, threshold, busy, payouts } = useOrg();
   const [show, setShow] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const canManage = treasury?.role === "owner" || treasury?.role === "admin";
   const isOwner = treasury?.role === "owner";
   const signers = members.filter((m) => m.status === "active");
+  const pendingCount = payouts.filter((p) => p.status === "pending").length;
+  const removalLocked = pendingCount > 0; // removing a co-signer mid-approval breaks in-flight payouts
 
   async function invite() {
     if (!email.trim()) return;
@@ -42,6 +44,7 @@ export default function Team() {
 
       <div className="card">
         <h3 style={{ marginBottom: 14 }}>Members ({signers.length})</h3>
+        {isOwner && removalLocked && <p className="hint" style={{ marginTop: -6, marginBottom: 14, color: "var(--warn)" }}>🔒 Removing members is locked while {pendingCount} payout{pendingCount === 1 ? " is" : "s are"} pending — resolve or reject them first. (Removing a co-signer mid-approval would orphan their vote and break that payout.)</p>}
         {signers.length === 0 ? (
           <EmptyState icon={<Icon.team size={24} />} title="No team yet">Add organisation members so payouts require multiple approvals.</EmptyState>
         ) : (
@@ -54,7 +57,7 @@ export default function Team() {
                   <td className="muted">{m.email}</td>
                   <td><span className={`badge ${m.role === "owner" ? "owner" : "ok"}`} style={{ textTransform: "capitalize" }}>{m.role}</span></td>
                   <td><span className="badge ok">{m.status}</span></td>
-                  <td className="right">{isOwner && m.role !== "owner" ? <button className="btn sm danger" disabled={busy} onClick={() => removeMember(m.email)}><Icon.trash size={13} /></button> : <span className="muted">—</span>}</td>
+                  <td className="right">{isOwner && m.role !== "owner" ? <button className="btn sm danger" disabled={busy || removalLocked} title={removalLocked ? "Resolve pending payouts before removing members" : "Remove member"} onClick={() => removeMember(m.email)}><Icon.trash size={13} /></button> : <span className="muted">—</span>}</td>
                 </tr>
               ))}
             </tbody>
