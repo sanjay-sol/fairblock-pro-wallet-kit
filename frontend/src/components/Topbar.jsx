@@ -41,7 +41,7 @@ export default function Topbar() {
   const nav = useNavigate();
   const { pathname } = useLocation();
   const { treasury, session, now, threshold, signerCount } = useOrg();
-  const title = TITLES[pathname] || "Stabletrust Pro";
+  const title = TITLES[pathname] || "Page not found"; // every real route is in TITLES → fallback = 404
   const [theme, setTheme] = useState(getTheme());
   const secs = session?.expiry ? countdown(session.expiry, now) : 0;
 

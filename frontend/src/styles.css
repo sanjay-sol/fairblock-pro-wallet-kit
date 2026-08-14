@@ -141,7 +141,7 @@ button { font-family: inherit; }
 .iconbtn:hover { color: var(--brand-soft); border-color: var(--brand); }
 .walletchip {
   display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 10px;
-  border: 1px solid var(--line-2); background: var(--card); font-size: 13px; font-family: ui-monospace, monospace;
+  border: 1px solid var(--line-2); background: var(--card); font-size: 13px; font-family: "JetBrains Mono", ui-monospace, monospace;
 }
 .walletchip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted-2); }
 .walletchip .dot.live { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); }
@@ -228,7 +228,7 @@ thead th {
 tbody td { padding: 13px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: var(--card-2); }
-.mono { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12.5px; }
+.mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace; font-size: 12.5px; }
 
 /* ---------- stepper ---------- */
 .stepper { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
@@ -401,6 +401,32 @@ tbody tr:hover { background: var(--card-2); }
    so dashboard buttons are untouched); a gentle lift on hover. */
 .auth-card .btn.primary { filter: brightness(0.9); }
 .auth-card .btn.primary:hover:not(:disabled) { filter: brightness(0.97); }
+
+/* ── Brand type — match fairblock.network: Inter body · Instrument Serif display headings ──
+   Serif on the prominent page/section titles + login; the dense UI (h3 card titles, labels,
+   buttons) stays Inter. Instrument Serif is a single 400 weight, so headings render regular. */
+h1, h2, .page-head h1, .topbar h2, .gate h1, .auth-title {
+  font-family: "Instrument Serif", Georgia, "Times New Roman", serif;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+/* ── 404 / not-found ── */
+.nf { min-height: 64vh; display: grid; place-items: center; text-align: center; }
+.nf-wrap { position: relative; padding: 30px 20px; animation: nf-in .5s cubic-bezier(.2,.7,.2,1) both; }
+.nf-orb { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); width: 260px; height: 260px; border-radius: 50%;
+  background: radial-gradient(circle, var(--brand-bg), transparent 68%); filter: blur(26px); z-index: 0; animation: nf-pulse 4.5s ease-in-out infinite; }
+.nf-404 { position: relative; z-index: 1; font-family: "Instrument Serif", Georgia, serif; font-size: clamp(96px, 15vw, 168px); line-height: .9;
+  background: linear-gradient(135deg, var(--brand), var(--brand-2)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent;
+  animation: nf-float 5s ease-in-out infinite; }
+.nf-title { position: relative; z-index: 1; margin: 10px 0 6px; font-size: 26px; }
+.nf-sub { position: relative; z-index: 1; color: var(--muted); max-width: 440px; margin: 0 auto 22px; line-height: 1.6; }
+.nf-sub .mono { color: var(--brand-soft); }
+.nf-actions { position: relative; z-index: 1; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+@keyframes nf-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
+@keyframes nf-pulse { 0%, 100% { opacity: .4; transform: translate(-50%, -50%) scale(1); } 50% { opacity: .72; transform: translate(-50%, -50%) scale(1.12); } }
+@keyframes nf-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .nf-404, .nf-orb, .nf-wrap { animation: none; } }
 
 /* progress list (batch) */
 .plist { display: flex; flex-direction: column; gap: 8px; }

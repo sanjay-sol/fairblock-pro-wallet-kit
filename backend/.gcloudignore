@@ -1,0 +1,18 @@
+# Files EXCLUDED from the Cloud Build upload on `gcloud run deploy --source backend/`.
+# gcloud always honors this file (deterministic — do not rely on .gitignore fallback).
+# Runtime config on Cloud Run comes from the service's own env vars + Secret Manager,
+# NOT from these files — so secrets must never enter the build context.
+
+# ── Secrets (Turnkey private key, SMTP password live in .env; Firebase key in the json) ──
+.env
+.env.*
+serviceAccount.json
+serviceAccount*.json
+
+# ── Junk / not needed at build ──
+node_modules/
+data/db.json
+*.log
+.git/
+.gitignore
+.DS_Store

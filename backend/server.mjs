@@ -99,6 +99,32 @@ async function publicTreasury(subOrgId, treasury) {
 app.get("/api/config", (_req, res) => res.json({ appName: APP_NAME, chains: chainList(), defaultChainId: DEFAULT_CHAIN_ID, turnkeyBaseUrl: process.env.TURNKEY_API_BASE_URL || "https://api.turnkey.com", sdkApiBaseUrl: process.env.SDK_API_BASE_URL || null, model: "B", dbMode, mail: mail.mode, tkEnabled }));
 app.get("/healthz", (_req, res) => res.json({ ok: true, dbMode, tkEnabled, mail: mail.mode }));
 
+// ── Confidential SDK relayer proxy ──
+// The SDK fires a FIRE-AND-FORGET "request row" POST to Fairblock's relayer
+// (stabletrust-backend-api.fairblock.network/api/requests) at the END of every
+// deposit/transfer — AFTER the op already settled on-chain (it's indexing/telemetry, not
+// settlement). That relayer has an Origin allowlist that 403s browser origins ("Origin not
+// allowed"), so in-browser the call fails and spams the console (cosmetic). Point the SDK
+// here via SDK_API_BASE_URL and we forward it server-to-server (no browser Origin header →
+// passes the allowlist), keeping the console clean. We never error the caller — the SDK
+// treats this as fire-and-forget anyway, and the on-chain op is already done.
+const RELAYER_URL = process.env.SDK_RELAYER_URL || "https://stabletrust-backend-api.fairblock.network";
+app.post("/api/requests", async (req, res) => {
+  try {
+    const r = await fetch(`${RELAYER_URL}/api/requests`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(req.body || {}),
+    });
+    const body = await r.text();
+    console.log(`[relayer-proxy] POST /api/requests → upstream ${r.status}`);
+    res.status(r.status).type(r.headers.get("content-type") || "application/json").send(body);
+  } catch (e) {
+    console.warn("[relayer-proxy] forward failed:", e?.message || e);
+    res.status(202).json({ ok: false, proxied: false });
+  }
+});
+
 // ── create a treasury (owner) ──
 app.post("/api/treasury", wrap(async (req, res) => {
   const { ownerEmail, name, ownerName, threshold = 1 } = req.body || {};

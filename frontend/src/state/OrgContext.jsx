@@ -25,6 +25,8 @@ function friendlyError(e) {
   if (/allotted quota|signing is disabled/i.test(m)) return "Turnkey signing credits are exhausted for this workspace — it needs more credits before anyone can sign again.";
   if (/resource_exhausted|quota exceeded/i.test(m)) return "The database hit its daily free-tier quota — switch the backend to in-memory or wait for the quota to reset.";
   if (/SIGNATURE_MISSING|session|expired|unauthorized|\b401\b|credential/i.test(m)) return "Your session expired — please sign in again.";
+  if (/failed to post request|net::ERR_FAILED|access-control|\bCORS\b/i.test(m)) return "The confidential relayer couldn't be reached — its backend (Stabletrust SDK) is blocking this origin. That's a backend/infra fix, not something the app can resolve.";
+  if (/nonce has already been used|nonce too low|already known/i.test(m)) return "A previous transfer is still settling on-chain — wait ~30s, then try again.";
   return m;
 }
 
@@ -46,6 +48,9 @@ export function OrgProvider({ children }) {
   // A batch run lives HERE (not in the BatchPayout page) so it survives navigation: the
   // loop keeps going + progress is preserved even if you leave and come back (task 2).
   const [activeBatch, setActiveBatch] = useState(null); // { id, delivery, willPropose, rows[], progress{i}, running, done, startedAt }
+  // A single payout also lives HERE so it survives navigation (task: same fix as the batch). The
+  // send keeps running + its result (sent / proposed / failed) stays visible on return (task 2).
+  const [activeSend, setActiveSend] = useState(null); // { id, recipient, amount, delivery, willPropose, status, txHash, error }
 
   const [toasts, setToasts] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -60,11 +65,13 @@ export function OrgProvider({ children }) {
   const vaultRef = useRef(null);     // { address, elgamal: { [chainId]: priv } } — per-chain keys
   const settledRef = useRef(null);   // count of settled payouts last seen → detect new settlements
   const activeBatchRef = useRef(null); // mirror of activeBatch for the fire-and-forget batch loop
+  const activeSendRef = useRef(null);  // mirror of activeSend for the fire-and-forget single send
   const treasurySyncRef = useRef(0);   // last time we re-read the treasury (throttles team/threshold sync)
   const kickedRef = useRef(false);     // set when the API says we're no longer a member → force logout
 
   useEffect(() => { treasuryRef.current = treasury; }, [treasury]);
   useEffect(() => { activeBatchRef.current = activeBatch; }, [activeBatch]);
+  useEffect(() => { activeSendRef.current = activeSend; }, [activeSend]);
 
   const toast = useCallback((msg, kind = "info") => {
     // Defensive: only ever render a string. A stray object (e.g. a click event
@@ -265,6 +272,7 @@ export function OrgProvider({ children }) {
     clearVault();
     setTreasury(null); treasuryRef.current = null; vaultRef.current = null; settledRef.current = null;
     setActiveBatch(null); activeBatchRef.current = null;
+    setActiveSend(null); activeSendRef.current = null;
     setBalances(EMPTY_BAL); setNativeBalance("0"); setPayouts([]); setRecipients([]); setMembers([]); setAnalytics(null);
     toast(msg || "Signed out", msg ? "error" : "muted");
   }, [toast]);
@@ -406,6 +414,26 @@ export function OrgProvider({ children }) {
   // Clear a FINISHED batch from the dashboard (guarded: never wipe a run in progress).
   const clearBatch = () => { if (!activeBatchRef.current?.running) { setActiveBatch(null); activeBatchRef.current = null; } };
 
+  // Single payout owned by context (survives navigation, like the batch): snapshot it, run
+  // proposePayout fire-and-forget, and stamp the outcome on the snapshot so /single shows the live
+  // status / result on return instead of a blank form — and a failure is visible, never "vanished".
+  const startSend = (params) => {
+    if (activeSendRef.current?.status === "sending") return;
+    const snap = {
+      id: `send_${Date.now().toString(36)}`,
+      recipient: params.recipient, recipientLabel: params.recipientLabel || null,
+      amount: params.amount, delivery: params.delivery, note: params.note || null,
+      symbol: tokenRef.current?.symbol, chainId: cfgRef.current.chainId,
+      willPropose: (treasuryRef.current?.threshold || 1) > 1,
+      status: "sending", txHash: null, error: null, startedAt: Date.now(),
+    };
+    setActiveSend(snap); activeSendRef.current = snap;
+    proposePayout(params)
+      .then((r) => setActiveSend((s) => (s && s.id === snap.id ? { ...s, status: r?.pending ? "pending" : "completed", txHash: r?.txHash || null } : s)))
+      .catch((e) => setActiveSend((s) => (s && s.id === snap.id ? { ...s, status: "failed", error: friendlyError(e) } : s)));
+  };
+  const clearSend = () => { if (activeSendRef.current?.status !== "sending") { setActiveSend(null); activeSendRef.current = null; } };
+
   const approveBatch = (payoutsToApprove) =>
     run(`Approve ${payoutsToApprove.length} payout${payoutsToApprove.length === 1 ? "" : "s"}`, async () => {
       const targets = payoutsToApprove.filter((p) => p.activityId && p.status === "pending");
@@ -462,13 +490,13 @@ export function OrgProvider({ children }) {
     chainId, networks, network, switchNetwork,
     treasury, members, signerCount, role: treasury?.role || null, threshold: treasury?.threshold || 1,
     authed: sessionActive(), session: getSession(),
-    balances, nativeBalance, payouts, recipients, analytics, activeBatch,
+    balances, nativeBalance, payouts, recipients, analytics, activeBatch, activeSend,
     token, symbol: token?.symbol || "USDC", tokenDecimals: token?.decimals ?? 6, nativeSymbol: cfg?.nativeSymbol || "ETH",
     toasts, busy, busyDesc, toast,
     // auth
     createTreasury, beginOtp, completeOtp, completeGoogle, createOrgWithGoogle, logout,
     // treasury ops
-    activateTreasury, refreshBalances, depositToConfidential, proposePayout, startBatch, clearBatch, approveBatch, approvePayout, rejectPayout,
+    activateTreasury, refreshBalances, depositToConfidential, proposePayout, startSend, clearSend, startBatch, clearBatch, approveBatch, approvePayout, rejectPayout,
     // members
     addMember, removeMember, setThreshold, saveName, addRecipient, removeRecipient, isActivated,
     // reloads

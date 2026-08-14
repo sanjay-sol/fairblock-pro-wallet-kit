@@ -16,6 +16,7 @@ import PendingPayouts from "./pages/PendingPayouts.jsx";
 import TransactionHistory from "./pages/TransactionHistory.jsx";
 import Team from "./pages/Team.jsx";
 import Settings from "./pages/Settings.jsx";
+import NotFound from "./pages/NotFound.jsx";
 
 export default function App() {
   const { ready, bootError, treasury, authed } = useOrg();
@@ -49,6 +50,7 @@ export default function App() {
           <Route path="/history" element={<TransactionHistory />} />
           <Route path="/team" element={<Team />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </div>
       <Toasts />

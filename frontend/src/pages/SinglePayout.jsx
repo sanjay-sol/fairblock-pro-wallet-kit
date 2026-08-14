@@ -6,10 +6,11 @@ import { isActivated } from "../confidential.js";
 import { Icon } from "../components/Icons.jsx";
 import { Stepper, AsyncButton } from "../components/ui.jsx";
 import { short, fmtAmount } from "../lib/format.js";
+import { explorerTx } from "../networks.js";
 
 export default function SinglePayout() {
   const nav = useNavigate();
-  const { balances, symbol, recipients, proposePayout, threshold, signerCount, busy, treasury } = useOrg();
+  const { balances, symbol, recipients, startSend, clearSend, activeSend, threshold, signerCount, busy, treasury } = useOrg();
   const [step, setStep] = useState(0);
   const [recipMode, setRecipMode] = useState(recipients.length ? "known" : "address");
   const [recipId, setRecipId] = useState(recipients[0]?.id || "");
@@ -35,9 +36,56 @@ export default function SinglePayout() {
   }, [recipient, delivery, validAddr]);
   const blockedByAcct = delivery === "confidential" && acct === "no";
 
-  async function confirm() {
-    const r = await proposePayout({ recipient, amount, delivery, recipientLabel, note });
-    nav(r?.pending ? "/pending" : "/history");
+  // Hand the send to OrgContext; it survives navigation + the result stays visible on return.
+  function confirm() { startSend({ recipient, amount, delivery, recipientLabel, note }); }
+  function newPayout() { clearSend(); setStep(0); }
+
+  // ── result / status view (context-owned, so returning to this page shows it) ──
+  if (activeSend) {
+    const s = activeSend;
+    const head = s.status === "sending" ? (s.willPropose ? "Proposing payout…" : "Sending payment…")
+      : s.status === "completed" ? "Payment sent"
+      : s.status === "pending" ? "Proposed for approval"
+      : "Payment failed";
+    const tone = s.status === "failed" ? "err" : s.status === "sending" ? "muted" : "ok";
+    return (
+      <div className="page narrow">
+        <div className="page-head"><h1>Single Payout</h1></div>
+        <div className="card">
+          <div className="flex" style={{ gap: 10, alignItems: "center", marginBottom: 6 }}>
+            {s.status === "sending" ? <span className="spinner" />
+              : s.status === "failed" ? <span style={{ color: "var(--err)" }}><Icon.x size={20} /></span>
+              : s.status === "pending" ? <span style={{ color: "var(--warn)" }}><Icon.pending size={20} /></span>
+              : <span style={{ color: "var(--ok)" }}><Icon.check size={20} /></span>}
+            <h3 style={{ margin: 0, color: `var(--${tone})` }}>{head}</h3>
+          </div>
+          <p className="csub" style={{ marginBottom: 16 }}>
+            {s.status === "sending" ? ""
+              : s.status === "pending" ? `Awaiting ${threshold} of ${signerCount} approvals, then it settles onchain automatically.`
+              : s.status === "failed" ? "Nothing was recorded. Check the message below and try again."
+              : "Settled onchain."}
+          </p>
+
+          <div className="table-wrap" style={{ marginBottom: 16 }}><table><tbody>
+            <tr><td className="muted">Recipient</td><td className="right">{s.recipientLabel ? `${s.recipientLabel} · ` : ""}<span className="mono">{short(s.recipient)}</span></td></tr>
+            <tr><td className="muted">Amount</td><td className="right"><b>{fmtAmount(s.amount, s.symbol)}</b></td></tr>
+            <tr><td className="muted">Delivery</td><td className="right">{s.delivery === "confidential" ? "Confidential (amount hidden)" : "Direct (amount public)"}</td></tr>
+            {s.txHash && <tr><td className="muted">Transaction</td><td className="right"><a className="mono" href={explorerTx(s.chainId, s.txHash)} target="_blank" rel="noreferrer">{short(s.txHash)}</a></td></tr>}
+          </tbody></table></div>
+
+          {s.status === "failed" && <p className="hint" style={{ color: "var(--err)", marginBottom: 16 }}>{s.error}</p>}
+
+          {s.status !== "sending" && (
+            <div className="flex">
+              <button className="btn grow" onClick={newPayout}>{s.status === "failed" ? "Try again" : "New payout"}</button>
+              {s.status === "pending"
+                ? <button className="btn primary grow" onClick={() => nav("/pending")}>Go to Pending Payouts <Icon.chevR size={15} /></button>
+                : <button className="btn primary grow" onClick={() => nav("/history")}>View history <Icon.chevR size={15} /></button>}
+            </div>
+          )}
+        </div>
+      </div>
+    );
   }
 
   return (
