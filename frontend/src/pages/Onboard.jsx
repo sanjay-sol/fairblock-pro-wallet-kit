@@ -2,78 +2,120 @@ import { useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useOrg } from "../state/OrgContext.jsx";
 import { Icon } from "../components/Icons.jsx";
+import GoogleSignInButton from "../components/GoogleSignInButton.jsx";
 import { getTheme, toggleTheme } from "../lib/theme.js";
+import { initialsOf } from "../lib/format.js";
 
-// Entry point: sign in (email OTP into your treasury sub-org) or create a new treasury.
+// Entry point. Three views: the start card (Sign in / Create organisation + Google), the email OTP
+// code step, and — when you Continue with Google on an account that has NO org yet — a one-field
+// "set up your organisation" step (no email re-entry; Google already gave us the verified email).
 export default function Onboard() {
-  const { createTreasury, beginOtp, completeOtp, busy, cfg } = useOrg();
+  const { createTreasury, beginOtp, completeOtp, completeGoogle, createOrgWithGoogle, busy, cfg } = useOrg();
   const [sp] = useSearchParams();
   const [mode, setMode] = useState("signin"); // signin | create
   const [email, setEmail] = useState(sp.get("email") || "");
-  const [name, setName] = useState("");
+  const [orgName, setOrgName] = useState("");
   const [ownerName, setOwnerName] = useState("");
-  const [pending, setPending] = useState(null);
+  const [pending, setPending] = useState(null); // email OTP step
+  const [gpending, setGpending] = useState(null); // { email, oidcToken, targetPublicKey, ephemeralPrivateKey }
   const [code, setCode] = useState("");
   const [err, setErr] = useState(null);
   const [theme, setTheme] = useState(getTheme());
 
   useEffect(() => { if (sp.get("email")) setMode("signin"); }, [sp]);
 
-  const sendCode = async () => {
-    setErr(null);
-    try {
-      if (mode === "create") await createTreasury({ name: name || "Treasury", ownerEmail: email, ownerName, threshold: 1 });
-      setPending(await beginOtp(email));
-    } catch (e) { setErr(e?.message || String(e)); }
-  };
-  const verify = async () => {
-    setErr(null);
-    try { await completeOtp(pending, code.trim()); } // treasury builds → App renders the shell
-    catch (e) { setErr(e?.message || String(e)); }
-  };
+  const guard = (fn) => async (...args) => { setErr(null); try { await fn(...args); } catch (e) { setErr(e?.message || String(e)); } };
+
+  const sendCode = guard(async () => {
+    if (mode === "create") await createTreasury({ name: orgName || "Organisation", ownerEmail: email, ownerName, threshold: 1 });
+    setPending(await beginOtp(email));
+  });
+  const verify = guard(async () => { await completeOtp(pending, code.trim()); });
+  const onGoogle = guard(async (payload) => {
+    const r = await completeGoogle(payload);
+    if (r?.needsOnboarding) setGpending({ ...payload, email: r.email }); // → collect org name only
+  });
+  const createGoogleOrg = guard(async () => { await createOrgWithGoogle({ ...gpending, orgName, ownerName }); });
+  const backToStart = () => { setPending(null); setGpending(null); setCode(""); setErr(null); };
+
+  const Spin = () => <span className="spinner" style={{ margin: 0 }} />;
 
   return (
     <div className="gate">
-      <button className="iconbtn" style={{ position: "fixed", top: 20, right: 20 }} onClick={() => setTheme(toggleTheme())}>{theme === "dark" ? <Icon.sun size={17} /> : <Icon.moon size={17} />}</button>
-      <div className="box">
-        <img className="logo-lg" src="/Logo.png" alt="Stabletrust Pro" />
-        <h1>{cfg?.appName || "Stabletrust Pro"}</h1>
-        <p className="hint" style={{ marginTop: -4 }}>Confidential treasury payouts on Fairblock.</p>
+      <button className="iconbtn" style={{ position: "fixed", top: 20, right: 20 }} onClick={() => setTheme(toggleTheme())} title="Toggle theme">
+        {theme === "dark" ? <Icon.sun size={17} /> : <Icon.moon size={17} />}
+      </button>
 
-        {!pending ? (
-          <div className="card" style={{ textAlign: "left", marginTop: 8 }}>
-            <div className="flex" style={{ marginBottom: 14 }}>
-              <button className={`btn sm ${mode === "signin" ? "primary" : "ghost"}`} onClick={() => setMode("signin")}>Sign in</button>
-              <button className={`btn sm ${mode === "create" ? "primary" : "ghost"}`} onClick={() => setMode("create")}>Create a treasury</button>
+      <div className="box auth-box">
+        <img className="auth-logo" src="/Logo.png" alt="Stabletrust Pro" />
+        <h1 className="auth-title">{cfg?.appName || "Stabletrust Pro"}</h1>
+        <p className="auth-sub">Confidential payouts for your organisation.</p>
+
+        {gpending ? (
+          /* ── Google onboarding: org name + your name only ── */
+          <div className="card auth-card">
+            <h3 style={{ margin: "0 0 4px" }}>Set up your organisation</h3>
+            <br />
+            <div className="auth-chip">
+              <div className="av">{initialsOf(gpending.email)}</div>
+              <div><div className="who">Signed in with Google</div><div className="whoe">{gpending.email}</div></div>
             </div>
-            {mode === "create" && (
-              <>
-                <label className="fld">Treasury name</label>
-                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Example Treasury" />
-                <label className="fld" style={{ marginTop: 10 }}>Your name</label>
-                <input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="Jane Doe" />
-              </>
-            )}
-            <label className="fld" style={{ marginTop: 10 }}>Email</label>
-            <div className="flex" style={{ gap: 8 }}>
-              <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" style={{ flex: 1 }} onKeyDown={(e) => e.key === "Enter" && email && sendCode()} />
-              <button className="btn primary" disabled={busy || !email} onClick={sendCode} title="Email me a code"><Icon.chevR size={16} /></button>
-            </div>
-            <p className="hint" style={{ marginTop: 10 }}>
-              {mode === "create" ? "You'll be the owner. Add co-signers + set the approval threshold after setup." : "We'll email a one-time code. Members: use the email you were invited with."}
-            </p>
+            <label className="fld">Organisation name*</label>
+            <input value={orgName} onChange={(e) => setOrgName(e.target.value)} placeholder="" autoFocus onKeyDown={(e) => e.key === "Enter" && orgName.trim() && createGoogleOrg()} />
+            <label className="fld" style={{ marginTop: 12 }}>Your name*</label>
+            <input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="" onKeyDown={(e) => e.key === "Enter" && orgName.trim() && createGoogleOrg()} />
+            <button className="btn primary big block" style={{ marginTop: 16 }} disabled={busy || !orgName.trim()} onClick={createGoogleOrg}>
+              {busy ? <Spin /> : <>Create organisation <Icon.chevR size={16} /></>}
+            </button>
+            <p className="auth-foot"> <br /> <span className="auth-link" onClick={backToStart}>← Use a different account</span></p>
+          </div>
+        ) : pending ? (
+          /* ── email OTP code ── */
+          <div className="card auth-card">
+            <h3 style={{ margin: "0 0 4px" }}>Check your email</h3>
+            <p className="csub" style={{ marginBottom: 16 }}>We sent a one-time code to <b style={{ color: "var(--ink)" }}>{pending.email}</b>.</p>
+            <label className="fld">Enter the code</label>
+            <input value={code} onChange={(e) => setCode(e.target.value.replace(/\s/g, "").slice(0, 9))} placeholder="6-digit code" autoFocus style={{ letterSpacing: "0.3em", fontSize: 18, textAlign: "center" }} onKeyDown={(e) => e.key === "Enter" && code.length >= 6 && verify()} />
+            <button className="btn primary big block" style={{ marginTop: 14 }} disabled={busy || code.length < 6} onClick={verify}>
+              {busy ? <Spin /> : <><Icon.shield size={16} /> {mode === "create" ? "Create & sign in" : "Sign in"}</>}
+            </button>
+            <p className="auth-foot"><span className="auth-link" onClick={backToStart}>← Use a different email</span></p>
           </div>
         ) : (
-          <div className="card" style={{ textAlign: "left", marginTop: 8 }}>
-            <label className="fld">Enter the code sent to {pending.email}</label>
-            <div className="flex" style={{ gap: 8 }}>
-              <input value={code} onChange={(e) => setCode(e.target.value.replace(/\s/g, "").slice(0, 9))} placeholder="6-digit code" autoFocus style={{ flex: 1, letterSpacing: "0.25em", fontSize: 18 }} onKeyDown={(e) => e.key === "Enter" && code.length >= 6 && verify()} />
-              <button className="btn primary" disabled={busy || code.length < 6} onClick={verify}><Icon.shield size={16} /> Sign in</button>
+          /* ── start: tabs + form + google ── */
+          <div className="card auth-card">
+            <div className="seg">
+              <button className={mode === "signin" ? "on" : ""} onClick={() => { setMode("signin"); setErr(null); }}>Sign in</button>
+              <button className={mode === "create" ? "on" : ""} onClick={() => { setMode("create"); setErr(null); }}>Create organisation</button>
             </div>
-            <button className="btn ghost sm" style={{ marginTop: 10 }} onClick={() => { setPending(null); setCode(""); }}>← Use a different email</button>
+
+            {mode === "create" && (
+              <>
+                <label className="fld">Organisation name</label>
+                <input value={orgName} onChange={(e) => setOrgName(e.target.value)} placeholder="Organisation name" />
+                <label className="fld" style={{ marginTop: 12 }}>Your name</label>
+                <input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="Your name" />
+                <label className="fld" style={{ marginTop: 12 }}>Email</label>
+              </>
+            )}
+            {mode === "signin" && <label className="fld">Email</label>}
+            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" type="email" onKeyDown={(e) => e.key === "Enter" && email && sendCode()} />
+            <button className="btn primary big block" style={{ marginTop: 14 }} disabled={busy || !email} onClick={sendCode}>
+              {busy ? <Spin /> : <>{mode === "create" ? "Create organisation" : "Continue with email"} <Icon.chevR size={16} /></>}
+            </button>
+
+            <div className="or-div">or</div>
+            <GoogleSignInButton onCredential={onGoogle} onError={setErr} disabled={busy} />
+
+            <p className="auth-foot">
+              {mode === "create"
+                ? "You'll be the owner. Add team members + set the approval threshold after setup."
+                : ""}
+            </p>
           </div>
         )}
-        {err && <p className="hint" style={{ marginTop: 12, color: "var(--err)" }}>{err}</p>}
+
+        {err && <p className="hint" style={{ marginTop: 14, color: "var(--err)" }}>{err}</p>}
       </div>
     </div>
   );

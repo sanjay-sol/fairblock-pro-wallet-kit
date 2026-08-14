@@ -14,9 +14,10 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { ethers } from "ethers";
+import { OAuth2Client } from "google-auth-library";
 import { store, initStore, storeMode } from "./store.mjs";
-import { initTurnkey, createTreasury, addMember, removeMember, setThreshold, otpInit, otpVerify, getActivity, rootSignTx } from "./turnkey.mjs";
-import { initMailer, sendInvite } from "./mailer.mjs";
+import { initTurnkey, createTreasury, addMember, removeMember, setThreshold, otpInit, otpVerify, oauthLogin, getActivity, rootSignTx } from "./turnkey.mjs";
+import { initMailer, sendInvite, sendPayoutProposal } from "./mailer.mjs";
 import { chainList, getChain, providerFor, explorerTxFor, DEFAULT_CHAIN_ID } from "./chains.mjs";
 
 const {
@@ -29,6 +30,19 @@ const {
 const ALLOWED = FRONTEND_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
 const cidOf = (v) => (v != null && getChain(v) ? Number(v) : DEFAULT_CHAIN_ID);
 const ERC20_ABI = ["function allowance(address,address) view returns (uint256)", "function approve(address,uint256)"];
+
+// Google Sign-In: the client ID is PUBLIC (also embedded in the frontend). Env-overridable; the
+// hardcoded fallback keeps prod working without an extra env var. We verify every Google id_token
+// server-side (signature + audience + issuer + expiry) before trusting its email for routing.
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "79984203938-grkcikcebs9l9ll4ti1mdjb3gvbib7ca.apps.googleusercontent.com";
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+async function verifyGoogleToken(idToken) {
+  const ticket = await googleClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID });
+  const p = ticket.getPayload();
+  if (!p?.email) throw new Error("no email in Google token");
+  if (p.email_verified === false) throw new Error("your Google email isn't verified");
+  return p; // { email, email_verified, sub, name, aud, iss, exp, ... }
+}
 
 // Build valid gas-fee fields for ANY chain. Some L2s (e.g. Arbitrum Sepolia) report a
 // max fee far below 1 gwei, so a hardcoded priority-fee fallback would exceed it and make
@@ -124,6 +138,51 @@ app.post("/api/auth/verify", wrap(async (req, res) => {
   res.json({ credentialBundle, subOrgId: idx.subOrgId, address: treasury.address, name: treasury.name, threshold: treasury.threshold, memberCount, chainId: treasury.chainId || DEFAULT_CHAIN_ID, role: member?.role || "admin", email: email.toLowerCase(), userId: userId || member?.userId });
 }));
 
+// ── OAuth (Google) sign-in relay — a verified Google id_token → the same session bundle as OTP ──
+// One step (no "send a code"): Google IS the challenge. We verify the token, route by its email
+// (same one-email-one-treasury invariant), then Turnkey mints the session (linking the Google
+// provider on first login). Response shape is IDENTICAL to /api/auth/verify.
+app.post("/api/auth/oauth", wrap(async (req, res) => {
+  const { oidcToken, targetPublicKey } = req.body || {};
+  if (!oidcToken || !targetPublicKey) return res.status(400).json({ error: "oidcToken and targetPublicKey are required" });
+  let email;
+  try { email = String((await verifyGoogleToken(oidcToken)).email).toLowerCase(); }
+  catch (e) { return res.status(401).json({ error: `Google sign-in couldn't be verified — ${e?.message || "invalid token"}` }); }
+  const idx = await store.emailIndexGet(email);
+  // No org for this verified Google account yet → NOT an error. Tell the client to collect just an
+  // org name + the owner's name (email is already known + verified) and finish via /api/auth/oauth/create.
+  if (!idx) return res.json({ needsOnboarding: true, email });
+  const treasury = await store.getTreasury(idx.subOrgId);
+  const member = await store.getMember(idx.subOrgId, email);
+  const { credentialBundle, userId } = await oauthLogin({ rootKey: treasury.rootKey, userId: member?.userId, oidcToken, targetPublicKey, sessionSeconds: 43200 });
+  if (!credentialBundle) return res.status(401).json({ error: "Google sign-in failed" });
+  if (member) await store.updateMember(idx.subOrgId, email, { status: "active", userId: userId || member.userId, joinedAt: new Date().toISOString() });
+  const memberCount = (await store.listMembers(idx.subOrgId)).length;
+  res.json({ credentialBundle, subOrgId: idx.subOrgId, address: treasury.address, name: treasury.name, threshold: treasury.threshold, memberCount, chainId: treasury.chainId || DEFAULT_CHAIN_ID, role: member?.role || "admin", email, userId: userId || member?.userId });
+}));
+
+// Create a new organisation for a Google-verified user (no email step — Google gave us the email).
+// Only org name + owner name are collected client-side; we re-verify the SAME token here and sign in.
+app.post("/api/auth/oauth/create", wrap(async (req, res) => {
+  const { oidcToken, targetPublicKey, orgName, ownerName } = req.body || {};
+  if (!oidcToken || !targetPublicKey) return res.status(400).json({ error: "oidcToken and targetPublicKey are required" });
+  let email, googleName;
+  try { const p = await verifyGoogleToken(oidcToken); email = String(p.email).toLowerCase(); googleName = p.name; }
+  catch (e) { return res.status(401).json({ error: `Google sign-in couldn't be verified — ${e?.message || "invalid token"}` }); }
+  const inUse = await store.emailIndexGet(email);
+  if (inUse) return res.status(409).json({ error: "This Google account already belongs to an organisation — sign in instead." });
+  const name = (orgName || "").trim() || "Organisation";
+  const owner = (ownerName || "").trim() || googleName || "Owner";
+  const t = await createTreasury({ name, ownerEmail: email, ownerName: owner, threshold: 1 });
+  await store.createTreasury({ subOrgId: t.subOrgId, name, ownerEmail: email, address: t.address, chainId: DEFAULT_CHAIN_ID, threshold: 1, spendPolicyId: t.spendPolicyId, rootKey: t.rootKey });
+  await store.addMember(t.subOrgId, { email, name: owner, role: "owner", userId: t.ownerUserId, status: "active" });
+  await store.emailIndexSet(email, { subOrgId: t.subOrgId, role: "owner" });
+  console.log(`[treasury] created via Google ${t.subOrgId.slice(0, 10)}… owner ${email}`);
+  const { credentialBundle, userId } = await oauthLogin({ rootKey: t.rootKey, userId: t.ownerUserId, oidcToken, targetPublicKey, sessionSeconds: 43200 });
+  if (!credentialBundle) return res.status(401).json({ error: "Signed up, but Google session couldn't be minted — try signing in." });
+  res.json({ credentialBundle, subOrgId: t.subOrgId, address: t.address, name, threshold: 1, memberCount: 1, chainId: DEFAULT_CHAIN_ID, role: "owner", email, userId });
+}));
+
 // ── treasury context + team ──
 app.get("/api/treasury", wrap(async (req, res) => {
   const c = await ctx(req, res); if (!c) return;
@@ -198,6 +257,29 @@ app.put("/api/threshold", wrap(async (req, res) => {
   res.json({ threshold });
 }));
 
+// Email every co-signer (except the proposer) when a payout needs approval. A K-row batch fires K
+// rapid POSTs, so we de-dupe by batchId in-memory (single instance) → ONE email per batch, not K.
+// Fire-and-forget: never blocks or fails the payout POST. No amount is included (it's encrypted).
+const notifiedBatches = new Map();
+async function notifyAdminsOfPayout(c, payout) {
+  try {
+    if (payout.batchId) {
+      const now = Date.now();
+      if (now - (notifiedBatches.get(payout.batchId) || 0) < 120000) return; // already emailed this batch
+      notifiedBatches.set(payout.batchId, now);
+      if (notifiedBatches.size > 500) for (const [k, t] of notifiedBatches) if (now - t > 600000) notifiedBatches.delete(k);
+    }
+    const members = await store.listMembers(c.subOrgId);
+    const others = members.filter((m) => m.status === "active" && m.email && m.email !== c.caller);
+    if (!others.length) return;
+    const approvals = `${c.treasury.threshold}-of-${members.length}`;
+    const proposerName = c.member?.name || c.caller;
+    const reviewUrl = `${APP_URL}/pending`;
+    await Promise.all(others.map((m) => sendPayoutProposal({ to: m.email, orgName: c.treasury.name, proposerName, approvals, reviewUrl, isBatch: !!payout.batchId })
+      .catch((e) => console.error("[payout notify]", m.email, e?.message))));
+  } catch (e) { console.error("[payout notify]", e?.message); }
+}
+
 // ── payouts: propose / list (with live consensus + auto-execute) / reject ──
 app.post("/api/payouts", wrap(async (req, res) => {
   const c = await ctx(req, res, "admin"); if (!c) return;
@@ -212,6 +294,8 @@ app.post("/api/payouts", wrap(async (req, res) => {
     note: b.note || null, status: completed ? "completed" : "pending", txHash: b.txHash || null, explorerUrl: b.explorerUrl || null,
     createdBy: c.caller, createdByName: c.member?.name || c.caller,
   });
+  // Notify co-signers only when it actually needs approval (pending/multi-sig) — not solo/completed.
+  if (!completed && payout.status === "pending") notifyAdminsOfPayout(c, payout); // fire-and-forget
   res.json(payout);
 }));
 

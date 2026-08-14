@@ -207,7 +207,7 @@ export function OrgProvider({ children }) {
 
   // ── auth ──
   const createTreasury = ({ name, ownerEmail, ownerName, threshold }) =>
-    run(`Create treasury`, async () => { await api.createTreasury({ name, ownerEmail, ownerName, threshold: Number(threshold) || 1 }); return { ownerEmail }; }, { silent: true });
+    run(`Create organisation`, async () => { await api.createTreasury({ name, ownerEmail, ownerName, threshold: Number(threshold) || 1 }); return { ownerEmail }; }, { silent: true });
 
   const beginOtp = (email) =>
     run(`Email a sign-in code`, async () => {
@@ -226,6 +226,35 @@ export function OrgProvider({ children }) {
       });
       await mountTreasury(sess);
       return sess;
+    }, { silent: true });
+
+  const mountFromAuth = async (v, ephemeralPrivateKey) => {
+    const sess = establishSession({
+      credentialBundle: v.credentialBundle, ephemeralPrivateKey,
+      subOrgId: v.subOrgId, address: v.address, email: v.email, role: v.role, name: v.name, threshold: v.threshold, memberCount: v.memberCount,
+      chainId: v.chainId, baseUrl: cfgRef.current.turnkeyBaseUrl,
+    });
+    await mountTreasury(sess);
+    return sess;
+  };
+
+  // Google sign-in: identical to completeOtp downstream. If the account has NO org yet the backend
+  // returns { needsOnboarding, email } (not an error) — we surface that so Onboard can collect just
+  // an org name + owner name (no email re-entry) and finish via createOrgWithGoogle.
+  const completeGoogle = ({ oidcToken, targetPublicKey, ephemeralPrivateKey }) =>
+    run(`Sign in with Google`, async () => {
+      const v = await api.authOauth({ oidcToken, targetPublicKey });
+      if (v.needsOnboarding) return { needsOnboarding: true, email: v.email };
+      await mountFromAuth(v, ephemeralPrivateKey);
+      return { signedIn: true };
+    }, { silent: true });
+
+  // Create a new org for a Google-verified user (reuses the SAME token + target key from the button).
+  const createOrgWithGoogle = ({ oidcToken, targetPublicKey, ephemeralPrivateKey, orgName, ownerName }) =>
+    run(`Create organisation`, async () => {
+      const v = await api.authOauthCreate({ oidcToken, targetPublicKey, orgName, ownerName });
+      await mountFromAuth(v, ephemeralPrivateKey);
+      return { signedIn: true };
     }, { silent: true });
 
   const logout = useCallback((reason) => {
@@ -437,7 +466,7 @@ export function OrgProvider({ children }) {
     token, symbol: token?.symbol || "USDC", tokenDecimals: token?.decimals ?? 6, nativeSymbol: cfg?.nativeSymbol || "ETH",
     toasts, busy, busyDesc, toast,
     // auth
-    createTreasury, beginOtp, completeOtp, logout,
+    createTreasury, beginOtp, completeOtp, completeGoogle, createOrgWithGoogle, logout,
     // treasury ops
     activateTreasury, refreshBalances, depositToConfidential, proposePayout, startBatch, clearBatch, approveBatch, approvePayout, rejectPayout,
     // members

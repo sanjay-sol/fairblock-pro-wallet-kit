@@ -23,7 +23,7 @@ export default function Team() {
   return (
     <div className="page">
       <div className="page-head between">
-        <div><h1>Team</h1><p>Add Organisation members to this treasury. Payouts right now configured to <b>{threshold} of {signers.length}</b> members approval.</p></div>
+        <div><h1>Team</h1><p>Add members to this Organisation. Payouts right now configured to <b>{threshold} of {signers.length}</b> members approval.</p></div>
         {canManage && <button className="btn primary" onClick={() => setShow((s) => !s)}><Icon.plus size={15} /> Invite Member</button>}
       </div>
 
@@ -44,7 +44,7 @@ export default function Team() {
 
       <div className="card">
         <h3 style={{ marginBottom: 14 }}>Members ({signers.length})</h3>
-        {isOwner && removalLocked && <p className="hint" style={{ marginTop: -6, marginBottom: 14, color: "var(--warn)" }}>🔒 Removing members is locked while {pendingCount} payout{pendingCount === 1 ? " is" : "s are"} pending — resolve or reject them first. (Removing a co-signer mid-approval would orphan their vote and break that payout.)</p>}
+        {isOwner && removalLocked && <p className="hint" style={{ marginTop: -6, marginBottom: 14, color: "var(--warn)" }}> Removing members is locked while {pendingCount} payout{pendingCount === 1 ? " is" : "s are"} pending - resolve or reject them first.</p>}
         {signers.length === 0 ? (
           <EmptyState icon={<Icon.team size={24} />} title="No team yet">Add organisation members so payouts require multiple approvals.</EmptyState>
         ) : (

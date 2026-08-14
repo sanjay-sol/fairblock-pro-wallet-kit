@@ -5,6 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/Logo.png" />
     <title>Stabletrust Pro · Confidential Treasury</title>
+    <script>
+      /* Google sign-in popup callback: if we're the popup and Google redirected back with an
+         id_token in the URL fragment, relay it to the opener and close — before the app loads. */
+      (function () {
+        try {
+          if (window.opener && window.location.hash && /(id_token|error)=/.test(window.location.hash)) {
+            var p = new URLSearchParams(window.location.hash.slice(1));
+            window.opener.postMessage({ type: "google-oauth", id_token: p.get("id_token"), error: p.get("error"), state: p.get("state") }, window.location.origin);
+            window.close();
+          }
+        } catch (e) { /* ignore */ }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

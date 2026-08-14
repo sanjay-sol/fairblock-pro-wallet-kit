@@ -151,6 +151,28 @@ export async function otpVerify({ rootKey, otpId, otpCode, targetPublicKey, sess
   return { credentialBundle: r.credentialBundle, userId: r.userId, apiKeyId: r.apiKeyId };
 }
 
+// ── OAuth (Google) login relay — verified OIDC token → session in the treasury sub-org ──
+// Exchanges a Google OIDC id_token for an HPKE-encrypted credential bundle (SAME shape as otpVerify,
+// so the client decrypts it identically). `targetPublicKey` is the client's ephemeral P-256 key; the
+// token's `nonce` must be sha256(targetPublicKey) (bound client-side). On a member's FIRST Google
+// login the provider isn't linked to their Turnkey user yet, so we catch that, register it with the
+// root key (createOauthProviders), and retry. Idempotent thereafter (oauth succeeds on the first try).
+export async function oauthLogin({ rootKey, userId, oidcToken, targetPublicKey, sessionSeconds }) {
+  const root = rootClient(rootKey);
+  const run = () => root.oauth({ organizationId: rootKey.subOrgId, oidcToken, targetPublicKey, ...(sessionSeconds ? { expirationSeconds: String(sessionSeconds) } : {}) });
+  let res;
+  try {
+    res = await run();
+  } catch (e) {
+    if (!userId) throw e; // can't link a provider without knowing which user
+    await root.createOauthProviders({ organizationId: rootKey.subOrgId, userId, oauthProviders: [{ providerName: `google-${Date.now().toString(36)}`, oidcToken }] });
+    res = await run();
+  }
+  const r = res?.activity?.result?.oauthResult || {};
+  if (!r.credentialBundle) throw new Error(`oauth not completed (${res?.activity?.status})`);
+  return { credentialBundle: r.credentialBundle, userId: r.userId };
+}
+
 // Sign a raw Ethereum tx with the treasury's BACKEND ROOT key. Root bypasses the N-of-M
 // SPEND policy, so it is used ONLY for fixed, FUND-NEUTRAL ops the backend fully controls:
 //   1. the one-time USDC→diamond allowance approve (spender hard-coded to the diamond);

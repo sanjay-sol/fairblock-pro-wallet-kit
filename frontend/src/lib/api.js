@@ -21,6 +21,8 @@ export const api = {
   createTreasury: (p) => j("/api/treasury", { method: "POST", body: JSON.stringify(p) }),
   authInit: (email) => j("/api/auth/init", { method: "POST", body: JSON.stringify({ email }) }),
   authVerify: (p) => j("/api/auth/verify", { method: "POST", body: JSON.stringify(p) }),
+  authOauth: (p) => j("/api/auth/oauth", { method: "POST", body: JSON.stringify(p) }),
+  authOauthCreate: (p) => j("/api/auth/oauth/create", { method: "POST", body: JSON.stringify(p) }),
   getTreasury: () => j("/api/treasury"),
   updateTreasury: (patch) => j("/api/treasury", { method: "PUT", body: JSON.stringify(patch) }),
   // members

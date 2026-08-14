@@ -59,3 +59,39 @@ export async function sendInvite({ to, orgName, role, inviterEmail, acceptUrl })
   const info = await transport.sendMail({ from: process.env.MAIL_FROM, to, subject, text, html });
   return { mode, messageId: info.messageId, accepted: info.accepted };
 }
+
+// Notify a co-signer that a payout was proposed and needs their approval. Deliberately carries NO
+// amount (it's encrypted end-to-end — the server never sees it) — just who proposed it, the required
+// approvals, and a link to review. Sent to every admin except the proposer when a payout is created.
+function payoutHtml({ orgName, proposerName, approvals, reviewUrl, isBatch }) {
+  const what = isBatch ? "a batch of payouts" : "a payout";
+  return `<!doctype html><html><body style="margin:0;background:#070c14;font-family:Inter,Arial,sans-serif;color:#e9f0f8;padding:28px">
+  <table role="presentation" width="100%" style="max-width:520px;margin:0 auto;background:#0f1826;border:1px solid #1e2c40;border-radius:14px;overflow:hidden">
+    <tr><td style="padding:26px 28px 8px">
+      <div style="font-size:18px;font-weight:700;color:#ffffff">Stabletrust&nbsp;Pro</div>
+      <div style="font-size:12px;color:#8ba0b8">Confidential treasury payouts on Fairblock</div>
+    </td></tr>
+    <tr><td style="padding:12px 28px 4px;font-size:15px;line-height:1.55;color:#e9f0f8">
+      <p style="margin:0"><b>${proposerName || "A Member"}</b> proposed ${what} in <b>${orgName || "your treasury"}</b> organization that needs your approval (<b style="color:#7cc4f7">${approvals}</b>).</p>
+      <p style="margin:10px 0 0;color:#8ba0b8;font-size:13px">Amounts stay encrypted - decrypt and review it in the dashboard.</p>
+    </td></tr>
+    <tr><td style="padding:18px 28px 6px">
+      <a href="${reviewUrl}" style="display:inline-block;background:linear-gradient(135deg,#1b8ae6,#3ba7f3);color:#ffffff;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:10px">Review &amp; Approve &rarr;</a>
+    </td></tr>
+    <tr><td style="padding:14px 28px 24px;font-size:12px;line-height:1.6;color:#8ba0b8">
+      Or paste this into your browser:<br><span style="color:#7cc4f7;word-break:break-all">${reviewUrl}</span>
+    </td></tr>
+  </table></body></html>`;
+}
+
+export async function sendPayoutProposal({ to, orgName, proposerName, approvals, reviewUrl, isBatch }) {
+  const subject = `[${orgName || "Stabletrust Pro"}] ${isBatch ? "New payouts need" : "A payout needs"} your approval`;
+  const text = `${proposerName || "A Member"} proposed ${isBatch ? "a batch of payouts" : "a payout"} in ${orgName || "your treasury"} organization that needs your approval (${approvals}).\n\nReview & Approve:\n${reviewUrl}`;
+  const html = payoutHtml({ orgName, proposerName, approvals, reviewUrl, isBatch });
+  if (mode === "console" || !transport) {
+    console.log(`[mailer:console] payout proposal → ${to} · ${reviewUrl}`);
+    return { mode: "console" };
+  }
+  const info = await transport.sendMail({ from: process.env.MAIL_FROM, to, subject, text, html });
+  return { mode, messageId: info.messageId };
+}
