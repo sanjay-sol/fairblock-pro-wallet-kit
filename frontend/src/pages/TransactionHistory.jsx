@@ -6,7 +6,7 @@ import { short, fmtAmount, fmtDate } from "../lib/format.js";
 import { explorerTx } from "../networks.js";
 
 export default function TransactionHistory() {
-  const { payouts } = useOrg();
+  const { payouts, settling } = useOrg();
   const [status, setStatus] = useState("all");
   const [q, setQ] = useState("");
 
@@ -42,7 +42,7 @@ export default function TransactionHistory() {
                 <td className="nowrap">{["deposit", "claim", "received"].includes(t.kind) ? "+" : "−"}{fmtAmount(t.amount, t.tokenSymbol)}</td>
                 <td><ChainBadge chainId={t.chainId} /></td>
                 <td>{t.delivery === "confidential" ? <span className="badge brand">Confidential</span> : <span className="badge">Direct</span>}</td>
-                <td><StatusBadge status={t.status} /></td>
+                <td>{settling && t.txHash && t.txHash === settling.txHash ? <span className="badge warn">Settling…</span> : <StatusBadge status={t.status} />}</td>
                 <td>{t.txHash ? <a className="mono muted" href={t.explorerUrl || explorerTx(t.chainId, t.txHash)} target="_blank" rel="noreferrer">{short(t.txHash)}</a> : t.error ? <span className="badge err" title={t.error}>error</span> : "—"}</td>
                 <td className="muted nowrap">{fmtDate(t.createdAt)}</td>
               </tr>

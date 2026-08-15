@@ -7,7 +7,8 @@ import { short, fmtAmount, fmtUsd, fmtDate } from "../lib/format.js";
 
 export default function Dashboard() {
   const nav = useNavigate();
-  const { treasury, balances, nativeBalance, symbol, nativeSymbol, network, payouts, analytics, busy, threshold, signerCount, activateTreasury, depositToConfidential, claimPending, claim, refreshBalances, reloadPayouts } = useOrg();
+  const { treasury, balances, nativeBalance, symbol, nativeSymbol, network, payouts, analytics, busy, threshold, signerCount, activateTreasury, depositToConfidential, claimPending, settling, refreshBalances, reloadPayouts } = useOrg();
+  const settleVerb = settling && (settling.kind === "deposit" ? "deposited" : settling.kind === "transfer" ? "sent" : "claimed");
   const [depAmt, setDepAmt] = useState("100");
 
   const hasGas = Number(nativeBalance) > 0;
@@ -74,14 +75,15 @@ export default function Dashboard() {
             <Stat k="Approvals" icon="team">{threshold}-of-{signerCount}</Stat>
           </div>
 
-          {/* Received confidential funds land in `pending` until claimed (applyPending). While a claim
-              settles on-chain (~30-60s) show a "settling" state instead of a stale Claim CTA. */}
-          {claim ? (
+          {/* Any confirmed op (deposit / transfer / claim) settles on-chain ~30-60s after its receipt —
+              show a "settling" state during that window. Otherwise, received funds sitting in `pending`
+              get a Claim CTA. Only one of these shows at a time. */}
+          {settling ? (
             <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--brand)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
               <span className="spinner" />
               <div style={{ flex: 1, minWidth: 150 }}>
-                <div><b>{fmtAmount(claim.amount, symbol)}</b> claimed — settling on-chain</div>
-                <p className="hint" style={{ margin: "2px 0 0" }}>Your available balance updates automatically in ~30-60s.</p>
+                <div>{settling.amountLabel ? <><b>{fmtAmount(settling.amountLabel, symbol)}</b> {settleVerb}</> : <b style={{ textTransform: "capitalize" }}>{settleVerb}</b>} - settling onchain</div>
+                {/* <p className="hint" style={{ margin: "2px 0 0" }}>Other operations are paused until it settles.</p> */}
               </div>
             </div>
           ) : Number(balances.confidential.pending) > 0 ? (
@@ -108,8 +110,9 @@ export default function Dashboard() {
           <label className="fld" style={{ marginTop: 12 }}>Amount ({symbol})</label>
           <div className="inline">
             <input value={depAmt} onChange={(e) => setDepAmt(e.target.value)} />
-            <AsyncButton className="btn primary" style={{ flex: "0 0 auto" }} disabled={busy || !treasury.activated || !(Number(depAmt) > 0)} onClick={() => depositToConfidential(depAmt)} loadingText="Depositing…"><Icon.download size={15} /> Deposit</AsyncButton>
+            <AsyncButton className="btn primary" style={{ flex: "0 0 auto" }} disabled={busy || !!settling || !treasury.activated || !(Number(depAmt) > 0)} onClick={() => depositToConfidential(depAmt)} loadingText="Depositing…"><Icon.download size={15} /> Deposit</AsyncButton>
           </div>
+          {settling && <p className="hint" style={{ marginTop: 10 }}>An operation is settling onchain - you can deposit again once it finishes.</p>}
           {!treasury.activated && <p className="hint" style={{ marginTop: 10 }}>Derive your confidential keys first.</p>}
           {threshold > 1 && <p className="hint" style={{ marginTop: 10 }}>Any single admin can fund the pool (deposits are <b>1-of-{signerCount}</b>). Only payouts require <b>{threshold}-of-{signerCount}</b> approval.</p>}
         </div>
@@ -150,7 +153,7 @@ export default function Dashboard() {
                   <td><KindBadge kind={t.kind} /></td>
                   <td>{t.recipientLabel || <span className="mono">{short(t.recipient)}</span>}</td>
                   <td className="nowrap">{["deposit", "claim", "received"].includes(t.kind) ? "+" : "−"}{fmtAmount(t.amount, t.tokenSymbol)}</td>
-                  <td><StatusBadge status={t.status} /></td>
+                  <td>{settling && t.txHash && t.txHash === settling.txHash ? <span className="badge warn">Settling…</span> : <StatusBadge status={t.status} />}</td>
                   <td className="muted nowrap">{fmtDate(t.createdAt)}</td>
                 </tr>
               ))}

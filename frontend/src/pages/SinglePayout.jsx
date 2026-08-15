@@ -10,7 +10,7 @@ import { explorerTx } from "../networks.js";
 
 export default function SinglePayout() {
   const nav = useNavigate();
-  const { balances, symbol, recipients, startSend, clearSend, activeSend, threshold, signerCount, busy, treasury } = useOrg();
+  const { balances, symbol, recipients, startSend, clearSend, activeSend, settling, threshold, signerCount, busy, treasury, toast } = useOrg();
   const [step, setStep] = useState(0);
   const [recipMode, setRecipMode] = useState(recipients.length ? "known" : "address");
   const [recipId, setRecipId] = useState(recipients[0]?.id || "");
@@ -39,6 +39,17 @@ export default function SinglePayout() {
   // Hand the send to OrgContext; it survives navigation + the result stays visible on return.
   function confirm() { startSend({ recipient, amount, delivery, recipientLabel, note }); }
   function newPayout() { clearSend(); setStep(0); }
+
+  // A 1-of-M CONFIDENTIAL transfer is CONFIRMED at its receipt (~10s) — announce it and move the user
+  // to History, where it shows as "Settling" while the ~30-60s finalization completes in the background.
+  // (N-of-M stays on-page as "Proposed for approval"; direct-to-wallet keeps its on-page "Payment sent".)
+  useEffect(() => {
+    if (activeSend?.status === "completed" && activeSend.delivery === "confidential" && !activeSend.willPropose) {
+      toast("Transfer confirmed - settling onchain", "ok");
+      clearSend();
+      nav("/history");
+    }
+  }, [activeSend, clearSend, nav, toast]);
 
   // ── result / status view (context-owned, so returning to this page shows it) ──
   if (activeSend) {
@@ -93,6 +104,13 @@ export default function SinglePayout() {
       <div className="page-head"><h1>Single Payout</h1></div>
       <Stepper steps={["Payment details", "Preview & Confirm"]} current={step} />
 
+      {settling && (
+        <div className="card" style={{ marginBottom: 16, borderColor: "var(--brand)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span className="spinner" />
+          <span>A previous operation is settling onchain - you can send again in a few seconds.</span>
+        </div>
+      )}
+
       {step === 0 && (
         <div className="card">
           <div className="card-row cols-2">
@@ -144,7 +162,7 @@ export default function SinglePayout() {
           {blockedByAcct && <p className="hint" style={{ marginTop: 12, color: "var(--err)" }}>✗ Recipient has no confidential account — switch to Direct, or have them onboard.</p>}
           {!enough && validAmt && <p className="hint" style={{ marginTop: 12, color: "var(--warn)" }}>⚠ Amount exceeds confidential balance ({fmtAmount(balances.confidential.available, symbol)}).</p>}
 
-          <button className="btn primary big block" style={{ marginTop: 18 }} disabled={!validAddr || !validAmt || !enough || blockedByAcct} onClick={() => setStep(1)}>Continue <Icon.chevR size={16} /></button>
+          <button className="btn primary big block" style={{ marginTop: 18 }} disabled={!validAddr || !validAmt || !enough || blockedByAcct || !!settling} onClick={() => setStep(1)}>Continue <Icon.chevR size={16} /></button>
         </div>
       )}
 
@@ -160,7 +178,7 @@ export default function SinglePayout() {
           </tbody></table></div>
           <div className="flex">
             <button className="btn ghost" onClick={() => setStep(0)} disabled={busy}><Icon.chevL size={15} /> Back</button>
-            <AsyncButton className="btn primary big grow" onClick={confirm} disabled={busy} loadingText={willPropose ? "Proposing…" : "Sending…"}>
+            <AsyncButton className="btn primary big grow" onClick={confirm} disabled={busy || !!settling} loadingText={willPropose ? "Proposing…" : "Sending…"}>
               {willPropose ? <><Icon.pending size={16} /> Propose for approval</> : <><Icon.send size={16} /> Send payment</>}
             </AsyncButton>
           </div>

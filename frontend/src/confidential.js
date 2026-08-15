@@ -153,19 +153,25 @@ export async function deposit(signer, token, amountStr) {
   const amount = ethers.parseUnits(String(amountStr), t.decimals);
   await withTimeout(client().ensureAccount(signer), OP_TIMEOUT, "Account check");
   await ensureAllowanceVisible(await signer.getAddress(), t.address, amount); // backend-root already approved; just wait until visible
+  // waitForFinalization:false → resolve at the deposit tx RECEIPT (~5-10s), NOT the ~30-60s keyshare
+  // finalization. The app reports "confirmed" here and watches the balance settle in the background.
+  // Deposits are always single, so the caller MUST block further ops until it settles (live pendingAction).
   return await withTimeout(
-    withDepositRetry(() => client().confidentialDeposit(signer, t.address, amount)),
+    withDepositRetry(() => client().confidentialDeposit(signer, t.address, amount, { waitForFinalization: false })),
     OP_TIMEOUT,
     "Deposit",
   );
 }
 
 // Confidential Settlement: treasury confidential → recipient confidential. Amount hidden.
-export async function confidentialTransfer(signer, recipient, token, amountStr) {
+// waitForFinalization defaults TRUE so BATCH rows stay serialized+proof-correct (each proof is built
+// against the current balance). A SINGLE transfer passes false to resolve at the receipt (confirmed)
+// and settle in the background — the caller then blocks further ops until it finalizes.
+export async function confidentialTransfer(signer, recipient, token, amountStr, waitForFinalization = true) {
   const t = normToken(token);
   const amount = ethers.parseUnits(String(amountStr), t.decimals);
   return await withTimeout(
-    client().confidentialTransfer(signer, recipient, t.address, amount),
+    client().confidentialTransfer(signer, recipient, t.address, amount, { waitForFinalization }),
     OP_TIMEOUT,
     "Transfer",
   );

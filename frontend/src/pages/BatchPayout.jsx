@@ -11,7 +11,7 @@ import { short, fmtAmount } from "../lib/format.js";
 // N-of-M payout with a CONSECUTIVE nonce, grouped as one batch to co-sign in one click.
 export default function BatchPayout() {
   const nav = useNavigate();
-  const { balances, symbol, recipients, busy, startBatch, clearBatch, activeBatch, threshold, signerCount } = useOrg();
+  const { balances, symbol, recipients, busy, startBatch, clearBatch, activeBatch, settling, threshold, signerCount } = useOrg();
 
   const [rows, setRows] = useState([]); // {id, address, amount, label, valid, errors, acct}
   const [delivery, setDelivery] = useState("confidential");
@@ -167,10 +167,11 @@ export default function BatchPayout() {
                     <div className="muted" style={{ fontSize: 12.5 }}>Total ({readyRows.length} ready{checkingRows.length ? `, ${checkingRows.length} checking` : ""})</div>
                     <div style={{ fontSize: 20, fontWeight: 680 }}>{fmtAmount(total, symbol)}</div>
                   </div>
-                  <button className="btn primary big" disabled={!readyRows.length || !enough || checkingRows.length > 0 || busy} onClick={execute}>
+                  <button className="btn primary big" disabled={!readyRows.length || !enough || checkingRows.length > 0 || busy || !!settling} onClick={execute}>
                     {willPropose ? <><Icon.pending size={16} /> Propose {readyRows.length} payout{readyRows.length === 1 ? "" : "s"}</> : <><Icon.send size={16} /> Send {readyRows.length} payout{readyRows.length === 1 ? "" : "s"}</>}
                   </button>
                 </div>
+                {settling && <p className="hint" style={{ marginTop: 10, color: "var(--brand)" }}>An operation is settling onchain - wait until it completes.</p>}
                 {!enough && readyRows.length > 0 && <p className="hint" style={{ marginTop: 10, color: "var(--warn)" }}>⚠ Total exceeds confidential balance ({fmtAmount(balances.confidential.available, symbol)}).</p>}
               </>
             )}
