@@ -39,7 +39,7 @@ export default function TransactionHistory() {
               <tr key={t.id}>
                 <td><KindBadge kind={t.kind} /></td>
                 <td>{t.recipientLabel || ""}<div className="mono muted" style={{ fontSize: 12 }}>{short(t.recipient)}</div></td>
-                <td className="nowrap">{t.kind === "deposit" ? "+" : "−"}{fmtAmount(t.amount, t.tokenSymbol)}</td>
+                <td className="nowrap">{["deposit", "claim", "received"].includes(t.kind) ? "+" : "−"}{fmtAmount(t.amount, t.tokenSymbol)}</td>
                 <td><ChainBadge chainId={t.chainId} /></td>
                 <td>{t.delivery === "confidential" ? <span className="badge brand">Confidential</span> : <span className="badge">Direct</span>}</td>
                 <td><StatusBadge status={t.status} /></td>

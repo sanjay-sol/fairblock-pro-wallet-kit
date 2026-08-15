@@ -51,6 +51,9 @@ export function OrgProvider({ children }) {
   // A single payout also lives HERE so it survives navigation (task: same fix as the batch). The
   // send keeps running + its result (sent / proposed / failed) stays visible on return (task 2).
   const [activeSend, setActiveSend] = useState(null); // { id, recipient, amount, delivery, willPropose, status, txHash, error }
+  // A claim (applyPending) tx settles ~30-60s AFTER it's broadcast (keyshare finalization). While
+  // settling we show a "settling" state instead of a stale Claim button (balance not yet reflected).
+  const [claim, setClaim] = useState(null); // { amount, startedAt } | null
 
   const [toasts, setToasts] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -68,6 +71,10 @@ export function OrgProvider({ children }) {
   const activeSendRef = useRef(null);  // mirror of activeSend for the fire-and-forget single send
   const treasurySyncRef = useRef(0);   // last time we re-read the treasury (throttles team/threshold sync)
   const kickedRef = useRef(false);     // set when the API says we're no longer a member → force logout
+  const balanceWatchRef = useRef(null); // { timer, until } — polls balances through the ~30-60s confidential finalization so a just-"completed" op isn't shown with a stale balance
+  const lastPendingRef = useRef(null);  // { chainId, pending } — detect INCOMING confidential transfers (pending increased) → log a "received" history row
+  const lastLocalOpRef = useRef(0);     // ts of our last local balance-moving op — suppress false "received" right after our own deposit
+  const reloadPayoutsRef = useRef(null); // stable handle to reloadPayouts (called from the memoized refreshBalances without a dep cycle)
 
   useEffect(() => { treasuryRef.current = treasury; }, [treasury]);
   useEffect(() => { activeBatchRef.current = activeBatch; }, [activeBatch]);
@@ -99,14 +106,56 @@ export function OrgProvider({ children }) {
         provRef.current ? provRef.current.getBalance(t.address) : Promise.resolve(0n),
       ]);
       let conf = { available: "0", pending: "0" };
+      let incoming = null; // { delta, cid } — an INCOMING confidential transfer just detected
       if (tok && t.activated && t.elgamalPriv) {
         const cb = await confidentialBalance(t.address, t.elgamalPriv, tok);
         conf = { available: cb.available, pending: cb.pending };
+        // Incoming confidential transfers land in `pending`. When pending increases (same chain,
+        // and NOT right after one of our own ops), it's money someone sent us → log a "received"
+        // history row. Deposits go to `available` (not pending) + our ops stamp lastLocalOpRef, so
+        // this won't misfire. Update the ref synchronously (before the async record) to prevent a
+        // concurrent refresh double-logging the same increase.
+        const cid = cfgRef.current?.chainId;
+        const pend = Number(conf.pending || 0);
+        const prev = lastPendingRef.current;
+        lastPendingRef.current = { chainId: cid, pending: pend };
+        if (prev && prev.chainId === cid && pend > prev.pending + 1e-6 && Date.now() - lastLocalOpRef.current > 20000) {
+          incoming = { delta: pend - prev.pending, cid };
+        }
+      } else {
+        lastPendingRef.current = null;
       }
       setBalances({ public: pub, confidential: conf });
       setNativeBalance(ethers.formatEther(native || 0n));
+      if (incoming) { // fire-and-forget so it never delays the balance UI
+        const delta = incoming.delta.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+        encryptAmount(delta, t.elgamalPriv)
+          .then((amountEnc) => api.proposePayout({ kind: "received", recipient: t.address, recipientLabel: "Incoming transfer", amountEnc, tokenSymbol: tok.symbol, token: tok.address, delivery: "confidential", note: null, nonce: null, batchId: null, chainId: incoming.cid, status: "completed", txHash: null, explorerUrl: null }))
+          .then(() => reloadPayoutsRef.current?.())
+          .catch((e) => console.warn("record received:", e?.message || e));
+      }
     } catch (e) { console.warn("balance refresh:", e?.message || e); }
   }, []);
+
+  // After an op settles, the confidential balance only reflects once the keyshare network
+  // finalizes (~30-60s AFTER the tx shows "completed"/"submitted") — a single refresh fires too
+  // early and leaves a stale balance until a manual Refresh. So poll balances every 7s for ~90s
+  // (extending the window if another op lands); the balance catches up on its own. Also used after
+  // a Claim to reflect the pending→available move. Self-terminates; one watcher at a time.
+  const watchBalances = useCallback((windowMs = 90000) => {
+    const until = Date.now() + windowMs;
+    if (balanceWatchRef.current) { balanceWatchRef.current.until = Math.max(balanceWatchRef.current.until, until); return; }
+    balanceWatchRef.current = {
+      until,
+      timer: setInterval(() => {
+        refreshBalances();
+        if (!balanceWatchRef.current || Date.now() >= balanceWatchRef.current.until) {
+          if (balanceWatchRef.current) clearInterval(balanceWatchRef.current.timer);
+          balanceWatchRef.current = null;
+        }
+      }, 7000),
+    };
+  }, [refreshBalances]);
 
   // ── reloads ──
   const reloadTreasury = useCallback(async () => {
@@ -139,10 +188,14 @@ export function OrgProvider({ children }) {
       setPayouts(dec);
       setAnalytics(computeAnalytics(dec.filter((p) => p.status === "completed")));
       const settled = dec.filter((p) => p.status === "completed" || p.status === "submitted").length;
-      if (settledRef.current != null && settled > settledRef.current) refreshBalances();
+      // A newly-settled payout shows "completed" on its receipt, but the confidential balance only
+      // moves ~30-60s later (keyshare finalization). Watch balances across that window instead of a
+      // single (too-early) refresh — otherwise the balance looks stuck until a manual Refresh.
+      if (settledRef.current != null && settled > settledRef.current) watchBalances();
       settledRef.current = settled;
     } catch (e) { if (/not a member/i.test(String(e?.message || ""))) kickedRef.current = true; console.warn("reloadPayouts:", e?.message || e); }
-  }, [refreshBalances]);
+  }, [watchBalances]);
+  useEffect(() => { reloadPayoutsRef.current = reloadPayouts; }, [reloadPayouts]);
 
   const loadElgamal = useCallback(async (address, cid) => {
     const vault = await loadVault();
@@ -206,11 +259,20 @@ export function OrgProvider({ children }) {
     if (!treasury) return;
     const hasPending = payouts.some((p) => p.status === "pending" || p.status === "submitted");
     const interval = hasPending ? 6000 : 45000;
-    const id = setInterval(() => { if (treasuryRef.current && !document.hidden) { reloadPayouts(); syncTeam(); } }, interval);
-    const onVis = () => { if (!document.hidden && treasuryRef.current) { reloadPayouts(); syncTeam(true); } };
+    // Also refresh balances on each tick so unclaimed `pending` (incoming transfers) surfaces on
+    // the dashboard + gets a "received" history row within ~45s idle — not only after an op.
+    const id = setInterval(() => { if (treasuryRef.current && !document.hidden) { reloadPayouts(); syncTeam(); refreshBalances(); } }, interval);
+    const onVis = () => { if (!document.hidden && treasuryRef.current) { reloadPayouts(); syncTeam(true); refreshBalances(); } };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
-  }, [treasury, payouts, reloadPayouts, syncTeam]);
+  }, [treasury, payouts, reloadPayouts, syncTeam, refreshBalances]);
+
+  // Clear the claim "settling" state once its pending has finalized into available (pending dropped
+  // below what we claimed). Belt-and-suspenders: also safety-cleared by the timeout in claimPending.
+  useEffect(() => {
+    if (!claim) return;
+    if (Number(balances.confidential.pending || 0) < Number(claim.amount || 0) - 1e-9) setClaim(null);
+  }, [balances, claim]);
 
   // ── auth ──
   const createTreasury = ({ name, ownerEmail, ownerName, threshold }) =>
@@ -451,6 +513,7 @@ export function OrgProvider({ children }) {
       const tok = tokenRef.current;
       const cid = cfgRef.current.chainId;
       if (activeBatchRef.current?.running) throw new Error("A batch payout is still running — let it finish before depositing (they'd fight over transaction nonces).");
+      lastLocalOpRef.current = Date.now();     // our own op — suppress a false "received" from this balance change
       await api.ensureAllowance(cid);          // backend-root sets the allowance if needed
       const { base } = await api.nonce(1, cid); // reserve a nonce (won't collide with pending payouts)
       let txHash = null, pending = null;
@@ -461,7 +524,32 @@ export function OrgProvider({ children }) {
       if (pending) { await recordPayout({ kind: "deposit", recipient: treasury.address, recipientLabel: "Treasury (self)", amount, delivery: "confidential", nonce: base }, { pending: true, ...pending }); await reloadPayouts(); return { pending: true }; }
       await recordPayout({ kind: "deposit", recipient: treasury.address, recipientLabel: "Treasury (self)", amount, delivery: "confidential", nonce: base }, { txHash });
       await Promise.all([refreshBalances(), reloadPayouts()]);
+      watchBalances(); // deposit finalizes ~30s later too — keep balances live until it lands
       return { completed: true };
+    });
+
+  // Claim = apply the treasury's `pending` (RECEIVED confidential funds) into `available` so they
+  // show up + become spendable. A confidential transfer lands in the recipient's `pending`;
+  // applyPending() finalizes it. The backend ROOT key signs it (fund-neutral → 1-click, NO
+  // approvals, even at N-of-M). Then watch balances through the ~30-60s finalization. Bonus:
+  // keeping `pending` at 0 stops the SDK's per-op auto-applyPending, so deposits/transfers stay fast.
+  const claimPending = () =>
+    run(`Claim confidential balance`, async () => {
+      const cid = cfgRef.current.chainId;
+      if (activeBatchRef.current?.running) throw new Error("A batch payout is still running — let it finish before claiming (they'd fight over transaction nonces).");
+      lastLocalOpRef.current = Date.now();
+      const amount = balances.confidential.pending; // what we're claiming (pre-claim pending)
+      const r = await api.claim(cid);
+      // The applyPending tx mined, but the balance moves pending→available only after keyshare
+      // finalization (~30-60s). Enter a "settling" state so the Claim CTA isn't shown stale.
+      const snap = { amount, startedAt: Date.now() };
+      setClaim(snap);
+      setTimeout(() => setClaim((c) => (c && c.startedAt === snap.startedAt ? null : c)), 100000); // safety clear
+      // Record the claim in Transaction History (received funds finalized into spendable balance).
+      await recordPayout({ kind: "claim", recipient: treasuryRef.current.address, recipientLabel: "Treasury (self)", amount, delivery: "confidential", nonce: null }, { txHash: r?.txHash || null });
+      await Promise.all([refreshBalances(), reloadPayouts()]);
+      watchBalances();
+      return r;
     });
 
   const approvePayout = (p) =>
@@ -490,13 +578,13 @@ export function OrgProvider({ children }) {
     chainId, networks, network, switchNetwork,
     treasury, members, signerCount, role: treasury?.role || null, threshold: treasury?.threshold || 1,
     authed: sessionActive(), session: getSession(),
-    balances, nativeBalance, payouts, recipients, analytics, activeBatch, activeSend,
+    balances, nativeBalance, payouts, recipients, analytics, activeBatch, activeSend, claim,
     token, symbol: token?.symbol || "USDC", tokenDecimals: token?.decimals ?? 6, nativeSymbol: cfg?.nativeSymbol || "ETH",
     toasts, busy, busyDesc, toast,
     // auth
     createTreasury, beginOtp, completeOtp, completeGoogle, createOrgWithGoogle, logout,
     // treasury ops
-    activateTreasury, refreshBalances, depositToConfidential, proposePayout, startSend, clearSend, startBatch, clearBatch, approveBatch, approvePayout, rejectPayout,
+    activateTreasury, refreshBalances, depositToConfidential, claimPending, proposePayout, startSend, clearSend, startBatch, clearBatch, approveBatch, approvePayout, rejectPayout,
     // members
     addMember, removeMember, setThreshold, saveName, addRecipient, removeRecipient, isActivated,
     // reloads

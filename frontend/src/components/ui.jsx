@@ -136,8 +136,11 @@ export function StatusBadge({ status }) {
 export function KindBadge({ kind }) {
   const map = {
     payout: ["brand", "Payout"],
+    transfer: ["brand", "Payout"],
     deposit: ["", "Deposit"],
     withdraw: ["", "Withdraw"],
+    received: ["ok", "Received"],
+    claim: ["ok", "Claimed"],
   };
   const [cls, txt] = map[kind] || ["", kind];
   return <span className={`badge ${cls}`}>{txt}</span>;

@@ -33,6 +33,7 @@ export const api = {
   listPayouts: () => j("/api/payouts"),
   nonce: (count = 1, chainId) => j(`/api/nonce?count=${count}${chainId ? `&chainId=${chainId}` : ""}`),
   ensureAllowance: (chainId) => j("/api/allowance", { method: "POST", body: JSON.stringify({ chainId }) }),
+  claim: (chainId) => j("/api/claim", { method: "POST", body: JSON.stringify({ chainId }) }),
   proposePayout: (p) => j("/api/payouts", { method: "POST", body: JSON.stringify(p) }),
   rejectPayout: (id) => j(`/api/payouts/${id}/rejected`, { method: "POST" }),
   // recipients

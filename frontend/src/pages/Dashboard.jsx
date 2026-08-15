@@ -7,7 +7,7 @@ import { short, fmtAmount, fmtUsd, fmtDate } from "../lib/format.js";
 
 export default function Dashboard() {
   const nav = useNavigate();
-  const { treasury, balances, nativeBalance, symbol, nativeSymbol, network, payouts, analytics, busy, threshold, signerCount, activateTreasury, depositToConfidential, refreshBalances, reloadPayouts } = useOrg();
+  const { treasury, balances, nativeBalance, symbol, nativeSymbol, network, payouts, analytics, busy, threshold, signerCount, activateTreasury, depositToConfidential, claimPending, claim, refreshBalances, reloadPayouts } = useOrg();
   const [depAmt, setDepAmt] = useState("100");
 
   const hasGas = Number(nativeBalance) > 0;
@@ -73,6 +73,28 @@ export default function Dashboard() {
             <Stat k={`Gas (${nativeSymbol})`} icon="coin">{fmtAmount(nativeBalance)}</Stat>
             <Stat k="Approvals" icon="team">{threshold}-of-{signerCount}</Stat>
           </div>
+
+          {/* Received confidential funds land in `pending` until claimed (applyPending). While a claim
+              settles on-chain (~30-60s) show a "settling" state instead of a stale Claim CTA. */}
+          {claim ? (
+            <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--brand)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <span className="spinner" />
+              <div style={{ flex: 1, minWidth: 150 }}>
+                <div><b>{fmtAmount(claim.amount, symbol)}</b> claimed — settling on-chain</div>
+                <p className="hint" style={{ margin: "2px 0 0" }}>Your available balance updates automatically in ~30-60s.</p>
+              </div>
+            </div>
+          ) : Number(balances.confidential.pending) > 0 ? (
+            <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--brand)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ color: "var(--brand)", display: "flex" }}><Icon.download size={18} /></span>
+              <div style={{ flex: 1, minWidth: 150 }}>
+                <div><b>{fmtAmount(balances.confidential.pending, symbol)}</b> received &amp; pending</div>
+                <p className="hint" style={{ margin: "2px 0 0" }}>Claim to move it into your spendable confidential balance.</p>
+              </div>
+              <AsyncButton className="btn sm primary" onClick={claimPending} disabled={busy} loadingText="Claiming…"><Icon.download size={14} /> Claim</AsyncButton>
+            </div>
+          ) : null}
+
           <div className="flex wrap" style={{ marginTop: 16 }}>
             <button className="btn sm" onClick={() => nav("/fund")}><Icon.receive size={14} /> Deposit</button>
             {!treasury.activated && <AsyncButton className="btn sm primary" onClick={activateTreasury} disabled={busy} loadingText="Deriving…"><Icon.shield size={14} /> Derive confidential keys</AsyncButton>}
@@ -127,7 +149,7 @@ export default function Dashboard() {
                 <tr key={t.id}>
                   <td><KindBadge kind={t.kind} /></td>
                   <td>{t.recipientLabel || <span className="mono">{short(t.recipient)}</span>}</td>
-                  <td className="nowrap">{t.kind === "deposit" ? "+" : "−"}{fmtAmount(t.amount, t.tokenSymbol)}</td>
+                  <td className="nowrap">{["deposit", "claim", "received"].includes(t.kind) ? "+" : "−"}{fmtAmount(t.amount, t.tokenSymbol)}</td>
                   <td><StatusBadge status={t.status} /></td>
                   <td className="muted nowrap">{fmtDate(t.createdAt)}</td>
                 </tr>

@@ -310,8 +310,12 @@ async function notifyAdminsOfPayout(c, payout) {
 app.post("/api/payouts", wrap(async (req, res) => {
   const c = await ctx(req, res, "admin"); if (!c) return;
   const b = req.body || {};
-  if (!b.activityId && !b.txHash) return res.status(400).json({ error: "activityId (pending) or txHash (completed) is required" });
-  const completed = !b.activityId && !!b.txHash; // solo (threshold 1) settles synchronously client-side
+  // `received` (incoming confidential transfer) + `claim` (applied pending) are INFORMATIONAL
+  // ledger rows on the recipient side — not co-signed payouts, so they don't need an activityId,
+  // and `received` has no tx of its own. They're always "completed" and never notify approvers.
+  const isLedgerEntry = ["received", "claim"].includes(b.kind);
+  if (!b.activityId && !b.txHash && !isLedgerEntry) return res.status(400).json({ error: "activityId (pending) or txHash (completed) is required" });
+  const completed = isLedgerEntry || (!b.activityId && !!b.txHash); // solo (threshold 1) settles synchronously client-side
   const payout = await store.addPayout(c.subOrgId, {
     activityId: b.activityId || null, fingerprint: b.fingerprint || null, chainId: cidOf(b.chainId),
     nonce: b.nonce != null ? Number(b.nonce) : null, batchId: b.batchId || null,
@@ -477,6 +481,36 @@ app.post("/api/allowance", wrap(async (req, res) => {
   await sent.wait();
   console.log(`[allowance] chain=${cid} approved diamond for ${c.treasury.address.slice(0, 10)}… ${sent.hash}`);
   res.json({ ok: true, txHash: sent.hash });
+}));
+
+// ── Claim (apply pending) — move the treasury's RECEIVED confidential funds from its
+// `pending` bucket into `available` so they show up + become spendable. A confidential
+// transfer lands in the recipient's `pending`; applyPending() finalizes it. This is
+// FUND-NEUTRAL (funds stay in the treasury's OWN account — spending still needs N-of-M),
+// so — like the allowance approve + the nonce-gap self-send — the backend ROOT key signs it
+// (rootSignTx is built for exactly these fixed fund-neutral ops). One click, no approvals,
+// even for an N-of-M treasury. Reserve a nonce that won't collide with in-flight payouts.
+// The keyshare finalization (~30–60s) then clears `pendingAction`; the frontend's balance
+// watcher polls until `pending` drops into `available`.
+const DIAMOND_APPLY_ABI = ["function applyPending()"];
+app.post("/api/claim", wrap(async (req, res) => {
+  const c = await ctx(req, res, "admin"); if (!c) return;
+  const cid = cidOf(req.body?.chainId);
+  const chain = getChain(cid), prov = providerFor(cid);
+  if (!chain || !prov) return res.status(400).json({ error: `unsupported chainId ${req.body?.chainId}` });
+  const data = new ethers.Interface(DIAMOND_APPLY_ABI).encodeFunctionData("applyPending", []);
+  const [onchain, list, fees] = await Promise.all([prov.getTransactionCount(c.treasury.address, "pending"), store.listPayouts(c.subOrgId), feeFields(prov)]);
+  const reserved = list.filter((p) => ["pending", "submitted"].includes(p.status) && p.nonce != null && cidOf(p.chainId) === cid).map((p) => Number(p.nonce));
+  const nonce = Math.max(onchain, reserved.length ? Math.max(...reserved) + 1 : 0);
+  let gasLimit = 500000n; // confidential applyPending is heavier than a plain transfer
+  try { gasLimit = (await prov.estimateGas({ from: c.treasury.address, to: chain.diamondAddress, data, value: 0n })) * 12n / 10n; } catch { /* keep fallback (e.g. nothing pending → may revert) */ }
+  const tx = { to: chain.diamondAddress, data, nonce, chainId: cid, value: 0n, gasLimit, ...fees };
+  const unsigned = ethers.Transaction.from(tx).unsignedSerialized.slice(2);
+  const signed = await rootSignTx({ rootKey: c.treasury.rootKey, address: c.treasury.address, unsignedTransaction: unsigned });
+  const sent = await prov.broadcastTransaction(signed);
+  const rc = await sent.wait().catch(() => null); // receipt only (~a few s); the ~30-60s finalization happens after
+  console.log(`[claim] chain=${cid} applyPending for ${c.treasury.address.slice(0, 10)}… ${sent.hash} mined=${rc?.status === 1}`);
+  res.json({ ok: true, txHash: sent.hash, chainId: cid, mined: rc?.status === 1 });
 }));
 
 app.get("/api/payouts", wrap(async (req, res) => {
