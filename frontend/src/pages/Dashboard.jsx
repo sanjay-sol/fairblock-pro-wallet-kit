@@ -91,7 +91,7 @@ export default function Dashboard() {
               <span style={{ color: "var(--brand)", display: "flex" }}><Icon.download size={18} /></span>
               <div style={{ flex: 1, minWidth: 150 }}>
                 <div><b>{fmtAmount(balances.confidential.pending, symbol)}</b> received &amp; pending</div>
-                <p className="hint" style={{ margin: "2px 0 0" }}>Claim to move it into your spendable confidential balance.</p>
+                <p className="hint" style={{ margin: "2px 0 0" }}>{threshold > 1 ? "Claim it to move it into your spendable confidential balance." : "Claim it now, or it will be applied automatically on your next deposit or transfer."}</p>
               </div>
               <AsyncButton className="btn sm primary" onClick={claimPending} disabled={busy} loadingText="Claiming…"><Icon.download size={14} /> Claim</AsyncButton>
             </div>

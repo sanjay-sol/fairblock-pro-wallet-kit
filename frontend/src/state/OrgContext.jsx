@@ -24,9 +24,13 @@ function friendlyError(e) {
   const m = String(e?.message || e || "");
   if (/allotted quota|signing is disabled/i.test(m)) return "Turnkey signing credits are exhausted for this workspace — it needs more credits before anyone can sign again.";
   if (/resource_exhausted|quota exceeded/i.test(m)) return "The database hit its daily free-tier quota — switch the backend to in-memory or wait for the quota to reset.";
-  if (/SIGNATURE_MISSING|session|expired|unauthorized|\b401\b|credential/i.test(m)) return "Your session expired — please sign in again.";
+  // NONCE checks come FIRST — otherwise "NONCE_EXPIRED" matches /expired/ in the session rule below and
+  // gets mislabeled "Your session expired" (that was a real bug in the screenshots).
+  if (/nonce has already been used|nonce too low|already known|NONCE_EXPIRED|replacement transaction underpriced/i.test(m)) return "A previous transaction is still settling on-chain — wait a few seconds, then try again.";
+  if (/execution reverted|CALL_EXCEPTION/i.test(m)) return "The transaction was rejected on-chain — refresh your balances and try again.";
   if (/failed to post request|net::ERR_FAILED|access-control|\bCORS\b/i.test(m)) return "The confidential relayer couldn't be reached — its backend (Stabletrust SDK) is blocking this origin. That's a backend/infra fix, not something the app can resolve.";
-  if (/nonce has already been used|nonce too low|already known/i.test(m)) return "A previous transfer is still settling on-chain — wait ~30s, then try again.";
+  // Session rule intentionally omits a bare `expired` (that caught NONCE_EXPIRED above).
+  if (/SIGNATURE_MISSING|\bsession\b|unauthorized|\b401\b|invalid.{0,4}credential/i.test(m)) return "Your session expired — please sign in again.";
   return m;
 }
 
@@ -441,7 +445,12 @@ export function OrgProvider({ children }) {
       lastLocalOpRef.current = Date.now();
       const { base } = await api.nonce(1, cid); // reserve this payout's nonce on this chain
       let txHash = null, pending = null;
-      setNonceOverride(base);
+      // NONCE OVERRIDE ONLY FOR MULTI-SIG. At 1-of-M the SDK's confidentialTransfer/withdraw runs its own
+      // applyPending() tx FIRST (when pending>0) then the transfer — forcing our single reserved nonce onto
+      // BOTH makes them collide ("nonce already used"). At 1-of-M we DON'T force it: the SDK auto-sequences
+      // via getTransactionCount (applyPending=N, transfer=N+1), which also makes auto-claim-on-next-op work.
+      // Multi-sig co-signed txs aren't broadcast until approval, so they still NEED forced consecutive nonces.
+      if ((treasuryRef.current?.threshold || 1) > 1) setNonceOverride(base);
       // A 1-of-M confidential transfer resolves at its RECEIPT (waitForFinalization:false) → "confirmed"
       // now, settles in the background. N-of-M throws PENDING_CONSENSUS before broadcast; direct keeps the
       // full wait (withdraw + public ERC20 transfer, no confidential settling phase).
@@ -488,7 +497,7 @@ export function OrgProvider({ children }) {
             if (delivery === "direct" && willPropose) throw new Error("Direct-to-wallet isn't supported under multi-sig yet — use Confidential");
             if (delivery === "confidential") { const ok = await isActivated(row.address); if (!ok) throw new Error("recipient has no confidential account"); }
             let txHash = null, pending = null;
-            setNonceOverride(nextNonce);
+            if (willPropose) setNonceOverride(nextNonce); // multi-sig only (see proposePayout). 1-of-M rows broadcast+mine in order → the SDK auto-sequences (incl. a first-row applyPending), so forcing a nonce would clash.
             try { txHash = await executeOnChain({ recipient: row.address, amount: row.amount, delivery }); }
             catch (e) { pending = takeLastPending(); if (!pending) throw e; }
             finally { clearNonceOverride(); }
@@ -554,7 +563,11 @@ export function OrgProvider({ children }) {
       await api.ensureAllowance(cid);          // backend-root sets the allowance if needed
       const { base } = await api.nonce(1, cid); // reserve a nonce (won't collide with pending payouts)
       let txHash = null, pending = null;
-      setNonceOverride(base);
+      // NONCE OVERRIDE ONLY FOR MULTI-SIG (see proposePayout). At 1-of-M, confidentialDeposit runs its own
+      // applyPending() FIRST when pending>0 then the deposit — forcing our single nonce onto BOTH clashes.
+      // Skipping it lets the SDK auto-sequence (applyPending=N finalized → deposit=N+1), i.e. auto-claim-then-
+      // deposit works. At N-of-M the applyPending needs approvals (orphaned) so the deposit runs fine at `base`.
+      if ((treasuryRef.current?.threshold || 1) > 1) setNonceOverride(base);
       try { const r = await cDeposit(treasury.signer, tok, amount); txHash = r?.hash || r?.transactionHash || null; }
       catch (e) { pending = takeLastPending(); if (!pending) throw e; }
       finally { clearNonceOverride(); }
