@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, useCallback, useRef } f
 import { ethers } from "ethers";
 import { loadBackendConfig, buildConfig, supportedNetworks } from "../config.js";
 import { networkList, getNetwork, loadSelectedChainId, saveSelectedChainId, explorerTx, DEFAULT_CHAIN_ID } from "../networks.js";
-import { api, setApiContext } from "../lib/api.js";
+import { api, setApiContext, setAuthErrorHandler } from "../lib/api.js";
 import { newTargetKey, establishSession, restoreSession, clearSession, sessionActive, getSession, patchSession } from "../lib/session.js";
 import { makeConsensusSigner, takeLastPending, approveActivity as tkApprove, setNonceOverride, clearNonceOverride } from "../signers.js";
 import { saveVault, loadVault, clearVault } from "../vault.js";
@@ -230,7 +230,7 @@ export function OrgProvider({ children }) {
 
   // Build the treasury object from a fresh session (after OTP verify or a restore).
   const mountTreasury = useCallback(async (sess) => {
-    setApiContext({ subOrgId: sess.subOrgId, email: sess.email });
+    setApiContext({ subOrgId: sess.subOrgId, email: sess.email, token: sess.token });
     const cid = cfgRef.current?.chainId;
     const elgamalPriv = await loadElgamal(sess.address, cid);
     const signer = makeConsensusSigner(provRef.current);
@@ -321,7 +321,7 @@ export function OrgProvider({ children }) {
       const sess = establishSession({
         credentialBundle: v.credentialBundle, ephemeralPrivateKey: pending.ephemeralPrivateKey,
         subOrgId: v.subOrgId, address: v.address, email: v.email, role: v.role, name: v.name, threshold: v.threshold, memberCount: v.memberCount,
-        chainId: v.chainId, baseUrl: cfgRef.current.turnkeyBaseUrl,
+        chainId: v.chainId, token: v.token, baseUrl: cfgRef.current.turnkeyBaseUrl,
       });
       await mountTreasury(sess);
       return sess;
@@ -331,7 +331,7 @@ export function OrgProvider({ children }) {
     const sess = establishSession({
       credentialBundle: v.credentialBundle, ephemeralPrivateKey,
       subOrgId: v.subOrgId, address: v.address, email: v.email, role: v.role, name: v.name, threshold: v.threshold, memberCount: v.memberCount,
-      chainId: v.chainId, baseUrl: cfgRef.current.turnkeyBaseUrl,
+      chainId: v.chainId, token: v.token, baseUrl: cfgRef.current.turnkeyBaseUrl,
     });
     await mountTreasury(sess);
     return sess;
@@ -360,7 +360,7 @@ export function OrgProvider({ children }) {
     // `reason` is only a message when we call logout() ourselves (e.g. session expiry).
     // When wired straight to onClick it arrives as a DOM event — ignore anything non-string.
     const msg = typeof reason === "string" ? reason : null;
-    clearSession(); setApiContext({ subOrgId: null, email: null });
+    clearSession(); setApiContext({ subOrgId: null, email: null, token: null });
     clearVault();
     setTreasury(null); treasuryRef.current = null; vaultRef.current = null; settledRef.current = null;
     setActiveBatch(null); activeBatchRef.current = null;
@@ -377,6 +377,14 @@ export function OrgProvider({ children }) {
     const s = getSession();
     if (s && s.expiry <= now) logout("Session expired - please sign in again");
   }, [now, treasury, logout]);
+
+  // A 401 from any API call (token missing / expired / invalid on the server) → sign out cleanly.
+  // Guarded by treasuryRef so a 401 DURING sign-in (e.g. a wrong OTP code) can't force a logout —
+  // it only fires once we're actually mounted into a treasury.
+  useEffect(() => {
+    setAuthErrorHandler(() => { if (treasuryRef.current) logout("Your session expired — please sign in again"); });
+    return () => setAuthErrorHandler(null);
+  }, [logout]);
 
   // ── network switching (task 5) ──
   const switchNetwork = useCallback((newChainId) => {

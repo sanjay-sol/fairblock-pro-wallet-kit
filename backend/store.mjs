@@ -77,7 +77,6 @@ const memoryImpl = {
   async addRecipient(id, r) { const o = memT(id); const rec = { id: rid("rc"), addedAt: nowIso(), ...r }; o.recipients.set(rec.id, rec); return rec; },
   async listRecipients(id) { return [...memT(id).recipients.values()]; },
   async removeRecipient(id, rid2) { memT(id).recipients.delete(rid2); },
-  async reset() { mem.treasuries.clear(); mem.emailIndex.clear(); },
 };
 
 // ─────────────────────────── Firestore impl ───────────────────────────
@@ -106,12 +105,6 @@ const firestoreImpl = {
   async addRecipient(id, r) { const ref = await sub(id, "recipients").add({ addedAt: nowIso(), ...r }); return { id: ref.id, ...r }; },
   async listRecipients(id) { return listDocs(sub(id, "recipients")); },
   async removeRecipient(id, rid2) { await sub(id, "recipients").doc(rid2).delete().catch(() => {}); },
-  async reset() {
-    const del = async (q) => { const d = (await q.get()).docs; await Promise.all(d.map((x) => x.ref.delete())); };
-    const treas = (await fs.collection("treasuries").get()).docs;
-    for (const t of treas) { for (const c of ["members", "payouts", "recipients"]) await del(sub(t.id, c)); await t.ref.delete().catch(() => {}); }
-    await del(fs.collection("emailIndex"));
-  },
 };
 
 export const store = new Proxy({}, { get: (_t, k) => (...a) => impl[k](...a) });

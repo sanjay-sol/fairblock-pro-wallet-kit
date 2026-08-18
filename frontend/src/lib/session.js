@@ -13,7 +13,7 @@ import { TurnkeyClient } from "@turnkey/http";
 const SKEY = "fbp-mb-session";
 const toHex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, "0")).join("");
 
-let _session = null; // { subOrgId, address, email, role, name, threshold, chainId, sessionPublicKey, sessionPrivateKey, expiry, baseUrl }
+let _session = null; // { subOrgId, address, email, role, name, threshold, chainId, token, sessionPublicKey, sessionPrivateKey, expiry, baseUrl }
 let _client = null;
 
 export const getSession = () => _session;
@@ -32,10 +32,10 @@ export function newTargetKey() {
 }
 
 // Step 2 (after backend returns credentialBundle): decrypt → session key → client → persist.
-export function establishSession({ credentialBundle, ephemeralPrivateKey, subOrgId, address, email, role, name, threshold, memberCount, chainId, baseUrl, sessionSeconds = 43200 }) {
+export function establishSession({ credentialBundle, ephemeralPrivateKey, subOrgId, address, email, role, name, threshold, memberCount, chainId, token, baseUrl, sessionSeconds = 43200 }) {
   const sessionPrivateKey = decryptCredentialBundle(credentialBundle, ephemeralPrivateKey);
   const sessionPublicKey = toHex(getPublicKey(sessionPrivateKey, true)); // compressed hex
-  _session = { subOrgId, address, email, role, name, threshold, memberCount, chainId, sessionPublicKey, sessionPrivateKey, baseUrl, expiry: Date.now() + sessionSeconds * 1000 };
+  _session = { subOrgId, address, email, role, name, threshold, memberCount, chainId, token, sessionPublicKey, sessionPrivateKey, baseUrl, expiry: Date.now() + sessionSeconds * 1000 };
   _client = buildClient(_session);
   try { localStorage.setItem(SKEY, JSON.stringify(_session)); } catch { /* ignore */ }
   return _session;
@@ -45,6 +45,9 @@ export function restoreSession() {
   try {
     const s = JSON.parse(localStorage.getItem(SKEY) || "null");
     if (!s?.expiry || s.expiry < Date.now()) { clearSession(); return null; }
+    // A session persisted before session tokens existed has no `token` → force a fresh sign-in
+    // (every API call would 401 otherwise). New sessions always carry one.
+    if (!s.token) { clearSession(); return null; }
     _session = s;
     _client = buildClient(s);
     return s;

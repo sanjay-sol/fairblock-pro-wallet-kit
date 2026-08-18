@@ -7,8 +7,10 @@
 //     payout, reports live approval status, and EXECUTES (broadcasts the signed tx) once
 //     the activity reaches the threshold — the authoritative gate is Turnkey's policy.
 //
-// Caller identity (POC): x-org-id = treasury subOrgId, x-caller-email = the signed-in
-// admin. Production should verify the Turnkey session server-side before trusting these.
+// Caller identity: an HMAC-signed session token (token.mjs), minted at OTP/OAuth sign-in and
+// sent as `Authorization: Bearer <token>`. ctx() derives subOrgId + email from the VERIFIED
+// token (not a spoofable header) and then does a LIVE DB lookup for membership + role — so a
+// forged token is rejected, and a removed member's still-valid token stops working at once.
 // ─────────────────────────────────────────────────────────────────────────────
 import "dotenv/config";
 import express from "express";
@@ -19,6 +21,7 @@ import { store, initStore, storeMode } from "./store.mjs";
 import { initTurnkey, createTreasury, addMember, removeMember, setThreshold, otpInit, otpVerify, oauthLogin, getActivity, rootSignTx } from "./turnkey.mjs";
 import { initMailer, sendInvite, sendPayoutProposal } from "./mailer.mjs";
 import { chainList, getChain, providerFor, explorerTxFor, DEFAULT_CHAIN_ID } from "./chains.mjs";
+import { signToken, verifyToken, bearerOf } from "./token.mjs";
 
 const {
   PORT = "8792",
@@ -64,26 +67,27 @@ const tkEnabled = initTurnkey();
 const mail = initMailer();
 
 const app = express();
-app.use(cors({ origin: (o, cb) => (!o || ALLOWED.includes(o)) ? cb(null, true) : cb(new Error(`origin ${o} not allowed`)), allowedHeaders: ["content-type", "x-org-id", "x-caller-email"] }));
+app.use(cors({ origin: (o, cb) => (!o || ALLOWED.includes(o)) ? cb(null, true) : cb(new Error(`origin ${o} not allowed`)), allowedHeaders: ["content-type", "authorization", "x-org-id", "x-caller-email"] }));
 app.use(express.json({ limit: "6mb" }));
 
 const wrap = (fn) => (req, res) => fn(req, res).catch((e) => { console.error(`[${req.method} ${req.path}]`, e?.message || e); res.status(500).json({ error: e?.message || String(e) }); });
-const orgOf = (req) => req.headers["x-org-id"] || null;
-const callerOf = (req) => String(req.headers["x-caller-email"] || "").toLowerCase();
 const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const RANK = { owner: 3, admin: 2 };
 
+// Gate for every treasury endpoint. AUTHENTICATION: identity (subOrgId + email) comes from the
+// HMAC-signed Bearer token — a missing/forged/expired token is a 401 (the client re-signs in).
+// AUTHORIZATION: still a LIVE DB lookup for membership + role, so a token stays subject to the
+// current team state — a REMOVED member's still-valid token is rejected (their email is gone from
+// the members list), and a role change takes effect immediately. `minRole` is an extra write gate.
 async function ctx(req, res, minRole) {
-  const subOrgId = orgOf(req);
-  if (!subOrgId) { res.status(400).json({ error: "missing x-org-id" }); return null; }
+  const claims = verifyToken(bearerOf(req));
+  if (!claims) { res.status(401).json({ error: "authentication required — please sign in again", code: "AUTH_REQUIRED" }); return null; }
+  const subOrgId = claims.sub;
+  const caller = String(claims.email || "").toLowerCase();
   const treasury = await store.getTreasury(subOrgId);
   if (!treasury) { res.status(404).json({ error: "treasury not found" }); return null; }
-  const caller = callerOf(req);
   const member = caller ? await store.getMember(subOrgId, caller) : null;
   const role = member?.role || null;
-  // Every treasury endpoint requires the caller to be a CURRENT member. This is what cuts off a
-  // REMOVED member's still-live session — their email is gone from the members list, so they can
-  // no longer read payouts/amounts/team or do anything. `minRole` is an extra gate for writes.
   if (!member) { res.status(403).json({ error: "not a member of this treasury" }); return null; }
   if (minRole && RANK[role] < RANK[minRole]) { res.status(403).json({ error: `requires ${minRole}` }); return null; }
   return { subOrgId, treasury, caller, role, member };
@@ -161,7 +165,8 @@ app.post("/api/auth/verify", wrap(async (req, res) => {
   const member = await store.getMember(idx.subOrgId, email);
   if (member) await store.updateMember(idx.subOrgId, email, { status: "active", userId: userId || member.userId, joinedAt: new Date().toISOString() });
   const memberCount = (await store.listMembers(idx.subOrgId)).length;
-  res.json({ credentialBundle, subOrgId: idx.subOrgId, address: treasury.address, name: treasury.name, threshold: treasury.threshold, memberCount, chainId: treasury.chainId || DEFAULT_CHAIN_ID, role: member?.role || "admin", email: email.toLowerCase(), userId: userId || member?.userId });
+  const token = signToken({ subOrgId: idx.subOrgId, email: email.toLowerCase(), role: member?.role || "admin" });
+  res.json({ token, credentialBundle, subOrgId: idx.subOrgId, address: treasury.address, name: treasury.name, threshold: treasury.threshold, memberCount, chainId: treasury.chainId || DEFAULT_CHAIN_ID, role: member?.role || "admin", email: email.toLowerCase(), userId: userId || member?.userId });
 }));
 
 // ── OAuth (Google) sign-in relay — a verified Google id_token → the same session bundle as OTP ──
@@ -184,7 +189,8 @@ app.post("/api/auth/oauth", wrap(async (req, res) => {
   if (!credentialBundle) return res.status(401).json({ error: "Google sign-in failed" });
   if (member) await store.updateMember(idx.subOrgId, email, { status: "active", userId: userId || member.userId, joinedAt: new Date().toISOString() });
   const memberCount = (await store.listMembers(idx.subOrgId)).length;
-  res.json({ credentialBundle, subOrgId: idx.subOrgId, address: treasury.address, name: treasury.name, threshold: treasury.threshold, memberCount, chainId: treasury.chainId || DEFAULT_CHAIN_ID, role: member?.role || "admin", email, userId: userId || member?.userId });
+  const token = signToken({ subOrgId: idx.subOrgId, email, role: member?.role || "admin" });
+  res.json({ token, credentialBundle, subOrgId: idx.subOrgId, address: treasury.address, name: treasury.name, threshold: treasury.threshold, memberCount, chainId: treasury.chainId || DEFAULT_CHAIN_ID, role: member?.role || "admin", email, userId: userId || member?.userId });
 }));
 
 // Create a new organisation for a Google-verified user (no email step — Google gave us the email).
@@ -206,7 +212,8 @@ app.post("/api/auth/oauth/create", wrap(async (req, res) => {
   console.log(`[treasury] created via Google ${t.subOrgId.slice(0, 10)}… owner ${email}`);
   const { credentialBundle, userId } = await oauthLogin({ rootKey: t.rootKey, userId: t.ownerUserId, oidcToken, targetPublicKey, sessionSeconds: 43200 });
   if (!credentialBundle) return res.status(401).json({ error: "Signed up, but Google session couldn't be minted — try signing in." });
-  res.json({ credentialBundle, subOrgId: t.subOrgId, address: t.address, name, threshold: 1, memberCount: 1, chainId: DEFAULT_CHAIN_ID, role: "owner", email, userId });
+  const token = signToken({ subOrgId: t.subOrgId, email, role: "owner" });
+  res.json({ token, credentialBundle, subOrgId: t.subOrgId, address: t.address, name, threshold: 1, memberCount: 1, chainId: DEFAULT_CHAIN_ID, role: "owner", email, userId });
 }));
 
 // ── treasury context + team ──
@@ -547,8 +554,6 @@ app.post("/api/recipients", wrap(async (req, res) => {
 app.delete("/api/recipients/:id", wrap(async (req, res) => { const c = await ctx(req, res, "admin"); if (!c) return; await store.removeRecipient(c.subOrgId, req.params.id); res.json({ ok: true }); }));
 
 // ── dev reset ──
-app.post("/api/admin/reset", wrap(async (_req, res) => { await store.reset(); res.json({ ok: true }); }));
-
 app.listen(Number(PORT), () => {
   console.log(`[stabletrust-pro · Model B] backend on http://localhost:${PORT}`);
   console.log(`[stabletrust-pro · Model B] db=${dbMode} · turnkey=${tkEnabled ? "on" : "OFF"} · mail=${mail.mode} · chains=${chainList().map((c) => c.chainId).join(",")}`);

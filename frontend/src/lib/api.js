@@ -1,17 +1,25 @@
-// Model B API client. Requests are scoped by x-org-id (treasury subOrgId) + x-caller-email
-// (the signed-in admin), set from the session via setApiContext().
+// Model B API client. Every request carries the signed session token as `Authorization:
+// Bearer <token>` — the backend verifies it (HMAC) and derives the caller's identity from it,
+// so identity can't be spoofed via a header. The token is set from the session by setApiContext().
 import { BACKEND_URL } from "../config.js";
 
-let ctx = { subOrgId: null, email: null };
+let ctx = { subOrgId: null, email: null, token: null };
 export function setApiContext(c = {}) { ctx = { ...ctx, ...c }; }
+
+// The OrgProvider registers a handler so a 401 (token missing/expired/invalid) triggers a
+// clean sign-out instead of surfacing as a raw error on every call.
+let onAuthError = null;
+export function setAuthErrorHandler(fn) { onAuthError = fn; }
 
 async function j(path, opts = {}) {
   const headers = { "content-type": "application/json", ...(opts.headers || {}) };
-  if (ctx.subOrgId) headers["x-org-id"] = ctx.subOrgId;
-  if (ctx.email) headers["x-caller-email"] = ctx.email;
+  if (ctx.token) headers["authorization"] = `Bearer ${ctx.token}`;
   const r = await fetch(`${BACKEND_URL}${path}`, { ...opts, headers });
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.error || `${path} → ${r.status}`);
+  if (!r.ok) {
+    if (r.status === 401) { try { onAuthError?.(body); } catch { /* ignore */ } }
+    throw new Error(body.error || `${path} → ${r.status}`);
+  }
   return body;
 }
 
