@@ -29,6 +29,9 @@ function friendlyError(e) {
   if (/nonce has already been used|nonce too low|already known|NONCE_EXPIRED|replacement transaction underpriced/i.test(m)) return "A previous transaction is still settling on-chain — wait a few seconds, then try again.";
   if (/execution reverted|CALL_EXCEPTION/i.test(m)) return "The transaction was rejected on-chain — refresh your balances and try again.";
   if (/failed to post request|net::ERR_FAILED|access-control|\bCORS\b/i.test(m)) return "The confidential relayer couldn't be reached — its backend (Stabletrust SDK) is blocking this origin. That's a backend/infra fix, not something the app can resolve.";
+  // Rate limiting: the backend's specific 429 message (e.g. "wait a few minutes") passes through
+  // as `m`; this only catches an opaque 429 (body couldn't be parsed → "path → 429").
+  if (/RATE_LIMITED|\b429\b/i.test(m)) return "You're going too fast - please wait a moment, then try again.";
   // Session rule intentionally omits a bare `expired` (that caught NONCE_EXPIRED above).
   if (/SIGNATURE_MISSING|\bsession\b|unauthorized|\b401\b|invalid.{0,4}credential/i.test(m)) return "Your session expired — please sign in again.";
   return m;

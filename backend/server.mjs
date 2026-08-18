@@ -22,6 +22,7 @@ import { initTurnkey, createTreasury, addMember, removeMember, setThreshold, otp
 import { initMailer, sendInvite, sendPayoutProposal } from "./mailer.mjs";
 import { chainList, getChain, providerFor, explorerTxFor, DEFAULT_CHAIN_ID } from "./chains.mjs";
 import { signToken, verifyToken, bearerOf } from "./token.mjs";
+import { globalIpLimiter, authInitIpLimiter, authInitEmailLimiter, authVerifyLimiter, oauthLimiter, createOrgIpLimiter, orgCreationGlobalLimiter, authedLimiter } from "./ratelimit.mjs";
 
 const {
   PORT = "8792",
@@ -67,7 +68,20 @@ const tkEnabled = initTurnkey();
 const mail = initMailer();
 
 const app = express();
+// Behind Cloud Run the real client IP is in X-Forwarded-For (one trusted hop). Without this,
+// req.ip is the front-end's IP for EVERYONE → per-IP limits would collapse into one global bucket.
+app.set("trust proxy", 1);
 app.use(cors({ origin: (o, cb) => (!o || ALLOWED.includes(o)) ? cb(null, true) : cb(new Error(`origin ${o} not allowed`)), allowedHeaders: ["content-type", "authorization", "x-org-id", "x-caller-email"] }));
+// Rate limiting (ratelimit.mjs). The global IP flood-catch + the per-identity authed cap run
+// BEFORE body parsing so a flood is rejected before we spend CPU parsing JSON. Endpoint-specific
+// limits (auth / create-org) are attached at their routes below. OPTIONS preflight is never counted.
+app.use(globalIpLimiter);
+app.use((req, res, next) => {
+  // Per-identity cap: applies to any request carrying a Bearer token. Tokenless requests
+  // (public/auth endpoints, or unauth floods) skip it — the global IP limiter covers those.
+  if (req.method === "OPTIONS" || !bearerOf(req)) return next();
+  return authedLimiter(req, res, next);
+});
 app.use(express.json({ limit: "6mb" }));
 
 const wrap = (fn) => (req, res) => fn(req, res).catch((e) => { console.error(`[${req.method} ${req.path}]`, e?.message || e); res.status(500).json({ error: e?.message || String(e) }); });
@@ -130,7 +144,7 @@ app.post("/api/requests", async (req, res) => {
 });
 
 // ── create a treasury (owner) ──
-app.post("/api/treasury", wrap(async (req, res) => {
+app.post("/api/treasury", createOrgIpLimiter, orgCreationGlobalLimiter, wrap(async (req, res) => {
   const { ownerEmail, name, ownerName, threshold = 1 } = req.body || {};
   if (!ownerEmail || !emailRe.test(ownerEmail)) return res.status(400).json({ error: "a valid ownerEmail is required" });
   const inUse = await store.emailIndexGet(ownerEmail);
@@ -144,7 +158,7 @@ app.post("/api/treasury", wrap(async (req, res) => {
 }));
 
 // ── OTP auth relay (email → session in the treasury sub-org) ──
-app.post("/api/auth/init", wrap(async (req, res) => {
+app.post("/api/auth/init", authInitIpLimiter, authInitEmailLimiter, wrap(async (req, res) => {
   const { email } = req.body || {};
   if (!email || !emailRe.test(email)) return res.status(400).json({ error: "a valid email is required" });
   const idx = await store.emailIndexGet(email);
@@ -154,7 +168,7 @@ app.post("/api/auth/init", wrap(async (req, res) => {
   res.json({ otpId, subOrgId: idx.subOrgId });
 }));
 
-app.post("/api/auth/verify", wrap(async (req, res) => {
+app.post("/api/auth/verify", authVerifyLimiter, wrap(async (req, res) => {
   const { email, otpId, otpCode, targetPublicKey } = req.body || {};
   if (!email || !otpId || !otpCode || !targetPublicKey) return res.status(400).json({ error: "email, otpId, otpCode, targetPublicKey are required" });
   const idx = await store.emailIndexGet(email);
@@ -173,7 +187,7 @@ app.post("/api/auth/verify", wrap(async (req, res) => {
 // One step (no "send a code"): Google IS the challenge. We verify the token, route by its email
 // (same one-email-one-treasury invariant), then Turnkey mints the session (linking the Google
 // provider on first login). Response shape is IDENTICAL to /api/auth/verify.
-app.post("/api/auth/oauth", wrap(async (req, res) => {
+app.post("/api/auth/oauth", oauthLimiter, wrap(async (req, res) => {
   const { oidcToken, targetPublicKey } = req.body || {};
   if (!oidcToken || !targetPublicKey) return res.status(400).json({ error: "oidcToken and targetPublicKey are required" });
   let email;
@@ -195,7 +209,7 @@ app.post("/api/auth/oauth", wrap(async (req, res) => {
 
 // Create a new organisation for a Google-verified user (no email step — Google gave us the email).
 // Only org name + owner name are collected client-side; we re-verify the SAME token here and sign in.
-app.post("/api/auth/oauth/create", wrap(async (req, res) => {
+app.post("/api/auth/oauth/create", oauthLimiter, orgCreationGlobalLimiter, wrap(async (req, res) => {
   const { oidcToken, targetPublicKey, orgName, ownerName } = req.body || {};
   if (!oidcToken || !targetPublicKey) return res.status(400).json({ error: "oidcToken and targetPublicKey are required" });
   let email, googleName;
