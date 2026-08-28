@@ -4,7 +4,7 @@ import { ethers } from "ethers";
 import { useOrg } from "../state/OrgContext.jsx";
 import { isActivated } from "../confidential.js";
 import { Icon } from "../components/Icons.jsx";
-import { Stepper, AsyncButton } from "../components/ui.jsx";
+import { Stepper, AsyncButton, TokenSelect } from "../components/ui.jsx";
 import { short, fmtAmount } from "../lib/format.js";
 import { explorerTx } from "../networks.js";
 
@@ -141,6 +141,9 @@ export default function SinglePayout() {
               )}
             </div>
           </div>
+
+          <label className="fld" style={{ marginTop: 18 }}>Token</label>
+          <TokenSelect />
 
           <div className="card-row cols-2" style={{ marginTop: 18 }}>
             <div className="field" style={{ margin: 0 }}><label className="fld">Amount ({symbol})</label><input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" /></div>

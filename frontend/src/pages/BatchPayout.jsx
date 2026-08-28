@@ -4,7 +4,7 @@ import { ethers } from "ethers";
 import { useOrg } from "../state/OrgContext.jsx";
 import { isActivated } from "../confidential.js";
 import { Icon } from "../components/Icons.jsx";
-import { ProgressBar } from "../components/ui.jsx";
+import { ProgressBar, TokenSelect } from "../components/ui.jsx";
 import { short, fmtAmount } from "../lib/format.js";
 
 // Batch payout — pay many recipients at once. Under multi-sig each row becomes its own
@@ -95,12 +95,14 @@ export default function BatchPayout() {
 
   return (
     <div className="page">
-      <div className="page-head"><h1>Batch Payout</h1><p>Pay many recipients from the treasury. {willPropose ? `Each becomes a ${threshold}-of-${signerCount} payout.` : "You're the sole signer - these send immediately."}</p></div>
+      <div className="page-head"><h1>Batch Payout</h1><p>Pay many recipients from the treasury. {willPropose ? `Each becomes a ${threshold}-of-${signerCount} payout, approved and settled one at a time.` : "You're the sole signer - these send immediately."}</p></div>
 
       {!showRun && (
         <>
           <div className="card">
-            <label className="fld">Delivery method</label>
+            <label className="fld">Token</label>
+            <TokenSelect />
+            <label className="fld" style={{ marginTop: 14 }}>Delivery method</label>
             <div className="choice-grid">
               <div className={`choice ${delivery === "confidential" ? "sel" : ""}`} onClick={() => changeDelivery("confidential")}>
                 <div className="ct"><span className="radio" /> Confidential Settlement <span className="badge brand">Recommended</span></div>
@@ -181,19 +183,23 @@ export default function BatchPayout() {
 
       {showRun && (
         <div className="card">
-          <h3>{done ? (willProposeRun ? "Batch proposed" : "Batch complete") : (willProposeRun ? "Proposing batch…" : "Sending batch…")}</h3>
-          <p className="csub">{done ? `${succeeded} ${willProposeRun ? "proposed" : "sent"}${failed ? `, ${failed} failed` : ""}.` : `${runRows.length} payouts · ${activeBatch?.delivery === "confidential" ? "amounts hidden" : "amounts public"}. You can leave this page — it keeps running.`}</p>
+          <h3>{done ? "Batch complete" : (willProposeRun ? "Settling batch…" : "Sending batch…")}</h3>
+          <p className="csub">{done
+            ? `${succeeded} settled${failed ? `, ${failed} failed` : ""}.`
+            : willProposeRun
+              ? `${runRows.length} payouts · each co-signed then settled in turn. Keep this page open — the next is built only after the last settles.`
+              : `${runRows.length} payouts · ${activeBatch?.delivery === "confidential" ? "amounts hidden" : "amounts public"}. You can leave this page — it keeps running.`}</p>
           <div style={{ margin: "6px 0 18px" }}><ProgressBar value={succeeded + failed} max={runRows.length} label={done ? "Done" : `Processing ${Math.min(succeeded + failed + 1, runRows.length)} of ${runRows.length}…`} /></div>
           <div className="plist" style={{ marginBottom: 18 }}>
             {runRows.map((r, i) => {
               const st = progress[i]?.status;
               const isDone = st === "completed" || st === "proposed";
               const isFail = st === "failed";
-              const isRun = st === "running"; // exactly one row is in-flight at a time
+              const isRun = st === "running" || st === "awaiting"; // exactly one row is in-flight at a time
               return (
                 <div key={i} className={`prow ${isDone ? "done" : isFail ? "fail" : isRun ? "run" : ""}`}>
                   <span className="st">{isDone ? <span style={{ color: "var(--ok)" }}><Icon.check size={16} /></span> : isFail ? <span style={{ color: "var(--err)" }}><Icon.x size={16} /></span> : isRun ? <span className="spinner" /> : <span className="muted">{i + 1}</span>}</span>
-                  <div className="grow"><div className="flex" style={{ gap: 8 }}><b>{r.label || short(r.address)}</b><span className="mono muted" style={{ fontSize: 12 }}>{short(r.address)}</span></div>{progress[i]?.error && <div className="hint" style={{ color: "var(--err)" }}>{progress[i].error}</div>}</div>
+                  <div className="grow"><div className="flex" style={{ gap: 8 }}><b>{r.label || short(r.address)}</b><span className="mono muted" style={{ fontSize: 12 }}>{short(r.address)}</span></div>{st === "awaiting" && <div className="hint" style={{ color: "var(--muted)" }}>awaiting co-signer approvals…</div>}{progress[i]?.error && <div className="hint" style={{ color: "var(--err)" }}>{progress[i].error}</div>}</div>
                   <div className="nowrap">{fmtAmount(r.amount, symbol)}</div>
                 </div>
               );
@@ -201,10 +207,10 @@ export default function BatchPayout() {
           </div>
           {done && (
             <>
-              {willProposeRun && succeeded > 0 && <div className="devbar" style={{ background: "var(--brand-bg)", borderColor: "var(--brand)", color: "var(--brand-soft)", marginBottom: 14 }}><b>{succeeded} payout(s) proposed.</b>  It settles once it hits {threshold}-of-{signerCount} approvals.</div>}
+              {willProposeRun && succeeded > 0 && <div className="devbar" style={{ background: "var(--brand-bg)", borderColor: "var(--brand)", color: "var(--brand-soft)", marginBottom: 14 }}><b>{succeeded} payout(s) settled.</b>  Each was approved {threshold}-of-{signerCount} and finalized on-chain, one at a time.</div>}
               <div className="flex">
                 <button className="btn grow" onClick={newBatch}>New batch</button>
-                {willProposeRun ? <button className="btn primary grow" onClick={() => nav("/pending")}>Go to Pending Payouts <Icon.chevR size={15} /></button> : <button className="btn primary grow" onClick={() => nav("/history")}>View history <Icon.chevR size={15} /></button>}
+                <button className="btn primary grow" onClick={() => nav("/history")}>View history <Icon.chevR size={15} /></button>
               </div>
             </>
           )}

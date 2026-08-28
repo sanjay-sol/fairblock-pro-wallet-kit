@@ -92,6 +92,17 @@ export async function isActivated(address) {
   }
 }
 
+// Does the account currently have an in-flight confidential op (a live `pendingAction`)?
+// This is the EXACT on-chain gate the contract enforces: while `pendingAction` is set, the
+// next confidential op reverts with "pending action". Used to serialize a multi-sig batch —
+// we don't build/settle the next row until the previous one's keyshare callback has cleared
+// this AND written the new balance (both happen in the same operator tx). Fail CLOSED (treat
+// an RPC error as "still pending") so we never advance the batch on a transient read failure.
+export async function pendingActionOf(address) {
+  const info = await client().getAccountInfo(address);
+  return !!(info && info.pendingAction);
+}
+
 // Never let a client-side op hang forever. On public testnet infra a signing or
 // broadcast step can stall, and ethers' tx.wait() has NO timeout — so the UI spins
 // indefinitely. We race every op against a timeout and, on expiry, throw a clear

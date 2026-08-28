@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
 import { ethers } from "ethers";
 import { loadBackendConfig, buildConfig, supportedNetworks } from "../config.js";
-import { networkList, getNetwork, loadSelectedChainId, saveSelectedChainId, explorerTx, DEFAULT_CHAIN_ID } from "../networks.js";
+import { networkList, getNetwork, getTokens, loadSelectedChainId, saveSelectedChainId, explorerTx, DEFAULT_CHAIN_ID } from "../networks.js";
 import { api, setApiContext, setAuthErrorHandler } from "../lib/api.js";
 import { newTargetKey, establishSession, restoreSession, clearSession, sessionActive, getSession, patchSession } from "../lib/session.js";
 import { makeConsensusSigner, takeLastPending, approveActivity as tkApprove, setNonceOverride, clearNonceOverride } from "../signers.js";
@@ -10,7 +10,7 @@ import { encryptAmount, decryptAmount } from "../metaCrypto.js";
 import { computeAnalytics } from "../lib/analytics.js";
 import {
   initConfidential, activateAccount, deposit as cDeposit, confidentialTransfer,
-  withdraw as cWithdraw, payDirect, publicBalance, confidentialBalance, isActivated,
+  withdraw as cWithdraw, payDirect, publicBalance, confidentialBalance, isActivated, pendingActionOf, resolveToken,
 } from "../confidential.js";
 
 const OrgCtx = createContext(null);
@@ -18,6 +18,26 @@ export const useOrg = () => useContext(OrgCtx);
 const EMPTY_BAL = { public: "0", confidential: { available: "0", pending: "0" } };
 const sameAddr = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
 const tokenOf = (n) => ({ address: n.tokenAddress, symbol: n.tokenSymbol, decimals: n.tokenDecimals });
+
+// ── multi-token: per-chain selected token + user-added custom tokens ──
+// The confidential diamond CANNOT enumerate its whitelisted tokens (plain mapping,
+// no event, no getter), so the offered list = the chain's registry tokens
+// (networks.js getTokens) + any the user adds by address, each validated on-chain via
+// resolveToken → isSupportedToken. The selection is persisted per chain.
+const CUSTOM_TOKENS_KEY = (cid) => `fbp-tokens-${cid}`;
+const SEL_TOKEN_KEY = (cid) => `fbp-seltoken-${cid}`;
+const loadCustomTokens = (cid) => { try { return JSON.parse(localStorage.getItem(CUSTOM_TOKENS_KEY(cid)) || "[]"); } catch { return []; } };
+const saveCustomTokens = (cid, list) => { try { localStorage.setItem(CUSTOM_TOKENS_KEY(cid), JSON.stringify(list)); } catch { /* ignore */ } };
+const buildTokenList = (cid) => {
+  const reg = getTokens(cid);
+  const custom = loadCustomTokens(cid).filter((c) => !reg.some((r) => sameAddr(r.address, c.address)));
+  return [...reg, ...custom];
+};
+const pickToken = (cid, list) => {
+  let sel = null;
+  try { sel = localStorage.getItem(SEL_TOKEN_KEY(cid)); } catch { /* ignore */ }
+  return list.find((t) => sameAddr(t.address, sel)) || list[0] || null;
+};
 
 // Map low-level Turnkey/session/db errors to friendly, actionable messages (task 2).
 function friendlyError(e) {
@@ -49,6 +69,8 @@ export function OrgProvider({ children }) {
   const [members, setMembers] = useState([]);
   const [balances, setBalances] = useState(EMPTY_BAL);
   const [nativeBalance, setNativeBalance] = useState("0");
+  const [token, setToken] = useState(null);   // selected confidential token { address, symbol, decimals }
+  const [tokens, setTokens] = useState([]);    // tokens offered on the current chain (registry + custom)
   const [payouts, setPayouts] = useState([]);
   const [recipients, setRecipients] = useState([]);
   const [analytics, setAnalytics] = useState(null);
@@ -131,8 +153,8 @@ export function OrgProvider({ children }) {
         const cid = cfgRef.current?.chainId;
         const pend = Number(conf.pending || 0);
         const prev = lastPendingRef.current;
-        lastPendingRef.current = { chainId: cid, pending: pend };
-        if (prev && prev.chainId === cid && pend > prev.pending + 1e-6 && Date.now() - lastLocalOpRef.current > 20000) {
+        lastPendingRef.current = { chainId: cid, token: tok.address, pending: pend };
+        if (prev && prev.chainId === cid && sameAddr(prev.token, tok.address) && pend > prev.pending + 1e-6 && Date.now() - lastLocalOpRef.current > 20000) {
           incoming = { delta: pend - prev.pending, cid };
         }
       } else {
@@ -258,7 +280,10 @@ export function OrgProvider({ children }) {
         const c = buildConfig(backendCfg, network);
         cfgRef.current = c; setCfg(c); setChainId(cid);
         initConfidential(c);
-        tokenRef.current = tokenOf(network);
+        const btl = buildTokenList(cid);
+        setTokens(btl);
+        const btok = pickToken(cid, btl);
+        tokenRef.current = btok; setToken(btok);
         provRef.current = new ethers.JsonRpcProvider(c.rpcUrl, c.chainId);
         const sess = restoreSession();
         if (sess) await mountTreasury(sess);
@@ -402,7 +427,10 @@ export function OrgProvider({ children }) {
     cfgRef.current = c; setCfg(c); setChainId(cid);
     initConfidential(c);
     provRef.current = new ethers.JsonRpcProvider(c.rpcUrl, c.chainId);
-    tokenRef.current = tokenOf(network);
+    const ntl = buildTokenList(cid);
+    setTokens(ntl);
+    const ntok = pickToken(cid, ntl);
+    tokenRef.current = ntok; setToken(ntok);
     const t0 = treasuryRef.current;
     if (t0) {
       const elg = vaultRef.current?.elgamal?.[cid] || null;
@@ -413,6 +441,38 @@ export function OrgProvider({ children }) {
     }
     toast(`Switched to ${network.name}`, "info");
   }, [refreshBalances, reloadPayouts, toast]);
+
+  // ── multi-token selection ──
+  const switchToken = useCallback((address) => {
+    const cid = cfgRef.current?.chainId;
+    const tok = (tokens || []).find((t) => sameAddr(t.address, address));
+    if (!tok || !cid) return;
+    try { localStorage.setItem(SEL_TOKEN_KEY(cid), tok.address); } catch { /* ignore */ }
+    tokenRef.current = tok; setToken(tok);
+    refreshBalances();
+  }, [tokens, refreshBalances]);
+
+  // Add a whitelisted token by address: resolveToken validates it's supported on THIS
+  // chain's diamond (rejects otherwise), then persist + select it. This is how the app
+  // surfaces tokens beyond the default — the contract has no way to list them itself.
+  const addCustomToken = (address) =>
+    run(`Add token`, async () => {
+      const cid = cfgRef.current?.chainId;
+      const info = await resolveToken(address); // { address, symbol, decimals, supported }
+      if (!info.supported) throw new Error(`${info.symbol} isn't whitelisted on this chain's confidential contract — ask the admin to enable it first.`);
+      const entry = { address: info.address, symbol: info.symbol, decimals: info.decimals };
+      const reg = getTokens(cid);
+      if (!reg.some((r) => sameAddr(r.address, entry.address))) {
+        const custom = loadCustomTokens(cid);
+        if (!custom.some((c) => sameAddr(c.address, entry.address))) saveCustomTokens(cid, [...custom, entry]);
+      }
+      const list = buildTokenList(cid);
+      setTokens(list);
+      try { localStorage.setItem(SEL_TOKEN_KEY(cid), entry.address); } catch { /* ignore */ }
+      tokenRef.current = entry; setToken(entry);
+      refreshBalances();
+      return entry;
+    }, { silent: true });
 
   // ── activation (derive ElGamal key for the CURRENT chain; registers on-chain, 1-of-M) ──
   const activateTreasury = () =>
@@ -486,6 +546,38 @@ export function OrgProvider({ children }) {
   // nothing silently disappears.
   const setRowProgress = (i, res) => setActiveBatch((b) => (b ? { ...b, progress: { ...b.progress, [i]: res } } : b));
 
+  // Wait until a co-signed batch row has been APPROVED to threshold, broadcast, and FINALIZED
+  // on-chain — i.e. the treasury's `pendingAction` has cleared and its new balance is written.
+  // That's the precondition for the NEXT row: its proof is bound to the current balance, and the
+  // next transfer must pass the contract's one-pending-action `gate`. We drive the backend executor
+  // by polling `/api/payouts` (which captures the signed tx on approval, then broadcasts + finalizes)
+  // and then gate on the EXACT on-chain signal the contract checks (`pendingActionOf`).
+  const BATCH_ROW_TIMEOUT = 30 * 60 * 1000; // 30 min — co-signers may take a while to approve
+  async function waitForBatchRowSettled(payoutId) {
+    const addr = treasuryRef.current?.address;
+    const deadline = Date.now() + BATCH_ROW_TIMEOUT;
+    for (;;) {
+      if (!activeBatchRef.current?.running) throw new Error("batch stopped");
+      if (Date.now() > deadline) throw new Error("timed out waiting for approvals — approve the remaining payouts, then run the rest again");
+      // GET /api/payouts drives the backend (capture signed tx on approval → broadcast → finalize)
+      // and returns the fresh list so we can read this row's status.
+      const list = await api.listPayouts().catch(() => null);
+      const p = list?.find((x) => x.id === payoutId);
+      if (p) {
+        if (p.status === "rejected") throw new Error("a co-signer rejected this payout");
+        if (p.status === "failed") throw new Error(p.error || "payout reverted on-chain");
+        if (p.status === "completed") {
+          // "completed" = the transfer got a success receipt, but the keyshare callback that clears
+          // pendingAction + writes the new sender balance lands ~30-60s LATER. The next row's proof
+          // needs that cleared state, so wait for the exact on-chain gate to open (fail closed).
+          const stillPending = await pendingActionOf(addr).catch(() => true);
+          if (!stillPending) { await refreshBalances(); return; }
+        }
+      }
+      await new Promise((r) => setTimeout(r, 3500));
+    }
+  }
+
   const startBatch = (inputRows, delivery) => {
     if (activeBatchRef.current?.running) return; // one batch at a time
     if (settlingRef.current) { toast("A previous operation is still settling onchain - please wait until it completes.", "error"); return; }
@@ -499,24 +591,60 @@ export function OrgProvider({ children }) {
     (async () => {
       const cid = cfgRef.current.chainId;
       try {
-        const { base } = await api.nonce(rows.length, cid);
-        let nextNonce = base;
-        for (let i = 0; i < rows.length; i++) {
-          const row = rows[i];
-          setRowProgress(i, { status: "running" });
-          try {
-            if (delivery === "direct" && willPropose) throw new Error("Direct-to-wallet isn't supported under multi-sig yet — use Confidential");
-            if (delivery === "confidential") { const ok = await isActivated(row.address); if (!ok) throw new Error("recipient has no confidential account"); }
-            let txHash = null, pending = null;
-            if (willPropose) setNonceOverride(nextNonce); // multi-sig only (see proposePayout). 1-of-M rows broadcast+mine in order → the SDK auto-sequences (incl. a first-row applyPending), so forcing a nonce would clash.
-            try { txHash = await executeOnChain({ recipient: row.address, amount: row.amount, delivery }); }
-            catch (e) { pending = takeLastPending(); if (!pending) throw e; }
-            finally { clearNonceOverride(); }
-            await recordPayout({ kind: delivery === "direct" ? "withdraw" : "transfer", recipient: row.address, recipientLabel: row.label || null, amount: row.amount, delivery, nonce: nextNonce, batchId: id }, pending ? { pending: true, ...pending } : { txHash });
-            setRowProgress(i, { status: pending ? "proposed" : "completed", txHash });
-            nextNonce++; // only advance on a recorded payout — failures reuse the nonce (no gap)
-          } catch (e) {
-            setRowProgress(i, { status: "failed", error: friendlyError(e) });
+        if (willPropose) {
+          // ── N-of-M: SERIALIZED. A confidential transfer's proof is bound to the sender's CURRENT
+          // balance ciphertext, and the contract permits only ONE pending action per account. Co-signed
+          // txs can't broadcast inline (they wait for approvals), so pre-signing the whole batch against
+          // one balance snapshot is exactly what made rows 2..K revert with "pending action". Instead we
+          // do one row at a time: propose (fresh proof vs the current balance) → wait for it to be approved
+          // AND settled on-chain → then the next. Each row is approved individually and the proposer must
+          // keep the app open (only their session can build each subsequent proof).
+          for (let i = 0; i < rows.length; i++) {
+            if (!activeBatchRef.current?.running) break;
+            const row = rows[i];
+            setRowProgress(i, { status: "running" });
+            try {
+              if (delivery === "direct") throw new Error("Direct-to-wallet isn't supported under multi-sig yet — use Confidential Settlement");
+              if (delivery === "confidential") { const ok = await isActivated(row.address); if (!ok) throw new Error("recipient has no confidential account"); }
+              // Fresh nonce for THIS row — the prior row has mined, so `/api/nonce` returns the correct
+              // next value. Forcing it onto the co-signed tx guarantees the baked nonce == what the
+              // executor broadcasts at (see proposePayout).
+              const { base } = await api.nonce(1, cid);
+              let pending = null;
+              setNonceOverride(base);
+              try { await executeOnChain({ recipient: row.address, amount: row.amount, delivery }); }
+              catch (e) { pending = takeLastPending(); if (!pending) throw e; }
+              finally { clearNonceOverride(); }
+              if (!pending) throw new Error("expected a co-sign request but none was created");
+              const payout = await recordPayout({ kind: "transfer", recipient: row.address, recipientLabel: row.label || null, amount: row.amount, delivery, nonce: base, batchId: id }, { pending: true, ...pending });
+              setRowProgress(i, { status: "awaiting", payoutId: payout.id });
+              await reloadPayouts(); // surface the new pending row to co-signers right away
+              await waitForBatchRowSettled(payout.id); // block until approved + finalized (pendingAction clear)
+              setRowProgress(i, { status: "completed" });
+            } catch (e) {
+              setRowProgress(i, { status: "failed", error: friendlyError(e) });
+              break; // stop the batch — later rows' proofs depend on this one settling first
+            }
+          }
+        } else {
+          // ── 1-of-M: unchanged. The solo signer completes synchronously, so executeOnChain broadcasts
+          // AND waits for finalization before the loop builds the next row — already serialized + correct.
+          const { base } = await api.nonce(rows.length, cid);
+          let nextNonce = base;
+          for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            setRowProgress(i, { status: "running" });
+            try {
+              if (delivery === "confidential") { const ok = await isActivated(row.address); if (!ok) throw new Error("recipient has no confidential account"); }
+              let txHash = null, pending = null;
+              try { txHash = await executeOnChain({ recipient: row.address, amount: row.amount, delivery }); }
+              catch (e) { pending = takeLastPending(); if (!pending) throw e; }
+              await recordPayout({ kind: delivery === "direct" ? "withdraw" : "transfer", recipient: row.address, recipientLabel: row.label || null, amount: row.amount, delivery, nonce: nextNonce, batchId: id }, pending ? { pending: true, ...pending } : { txHash });
+              setRowProgress(i, { status: pending ? "proposed" : "completed", txHash });
+              nextNonce++; // only advance on a recorded payout — failures reuse the nonce (no gap)
+            } catch (e) {
+              setRowProgress(i, { status: "failed", error: friendlyError(e) });
+            }
           }
         }
       } catch (e) {
@@ -627,7 +755,6 @@ export function OrgProvider({ children }) {
   const removeRecipient = (id) => run(`Remove recipient`, async () => { await api.removeRecipient(id); await reloadRecipients(); }, { silent: true });
   const saveName = (name) => run(`Save`, async () => { await api.updateTreasury({ name }); await reloadTreasury(); }, { silent: true });
 
-  const token = tokenRef.current;
   const activeSigners = members.filter((m) => m.status === "active").length;
   const signerCount = Math.max(activeSigners, treasury?.memberCount || 0);
   const network = cfg ? { name: cfg.networkName, shortName: cfg.shortName, chainId: cfg.chainId } : null;
@@ -637,7 +764,7 @@ export function OrgProvider({ children }) {
     treasury, members, signerCount, role: treasury?.role || null, threshold: treasury?.threshold || 1,
     authed: sessionActive(), session: getSession(),
     balances, nativeBalance, payouts, recipients, analytics, activeBatch, activeSend, settling,
-    token, symbol: token?.symbol || "USDC", tokenDecimals: token?.decimals ?? 6, nativeSymbol: cfg?.nativeSymbol || "ETH",
+    token, tokens, switchToken, addCustomToken, symbol: token?.symbol || "USDC", tokenDecimals: token?.decimals ?? 6, nativeSymbol: cfg?.nativeSymbol || "ETH",
     toasts, busy, busyDesc, toast,
     // auth
     createTreasury, beginOtp, completeOtp, completeGoogle, createOrgWithGoogle, logout,

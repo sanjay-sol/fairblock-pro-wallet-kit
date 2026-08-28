@@ -131,6 +131,23 @@ export async function setThreshold({ rootKey, threshold, spendPolicyId }) {
   return policyIdOf(spend);
 }
 
+// After a diamond REDEPLOY, existing treasuries' FUND policy still lists the OLD diamonds,
+// so createConfidentialAccount/deposit to a NEW diamond falls through to SPEND (N-of-M) →
+// PENDING_CONSENSUS at threshold>1. Add a FUND policy covering the CURRENT diamond set
+// (fundCondition() reads allDiamonds()), restoring the intended 1-of-M for fund-neutral ops.
+export async function addFundPolicy({ rootKey }) {
+  const root = rootClient(rootKey);
+  const r = await root.createPolicy({ organizationId: rootKey.subOrgId, policyName: "FUND 1-of-N (redeploy)", effect: "EFFECT_ALLOW", consensus: "approvers.count() >= 1", condition: fundCondition(), notes: "modelb-fund-redeploy" });
+  return policyIdOf(r);
+}
+
+// Best-effort list of a sub-org's policies (used for migration idempotency).
+export async function listPolicies({ rootKey }) {
+  const root = rootClient(rootKey);
+  const r = await root.getPolicies({ organizationId: rootKey.subOrgId });
+  return r?.policies || [];
+}
+
 // ── OTP auth relay (email → session in the treasury sub-org) ──
 // Step 1: send a code to the member's email (registered in the sub-org).
 export async function otpInit({ rootKey, email }) {

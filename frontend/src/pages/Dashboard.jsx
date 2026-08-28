@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useOrg } from "../state/OrgContext.jsx";
 import { Icon } from "../components/Icons.jsx";
-import { Stat, EmptyState, StatusBadge, KindBadge, CopyBtn, AsyncButton } from "../components/ui.jsx";
+import { Stat, EmptyState, StatusBadge, KindBadge, CopyBtn, AsyncButton, TokenSelect } from "../components/ui.jsx";
 import { short, fmtAmount, fmtUsd, fmtDate } from "../lib/format.js";
 
 export default function Dashboard() {
@@ -107,6 +107,8 @@ export default function Dashboard() {
         <div className="card" id="deposit-card">
           <h3>Load confidential balance</h3>
           <p className="csub">Move public {symbol} into the treasury's confidential balance.</p>
+          <label className="fld" style={{ marginTop: 12 }}>Token</label>
+          <TokenSelect />
           <label className="fld" style={{ marginTop: 12 }}>Amount ({symbol})</label>
           <div className="inline">
             <input value={depAmt} onChange={(e) => setDepAmt(e.target.value)} />

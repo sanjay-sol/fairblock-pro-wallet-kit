@@ -61,6 +61,7 @@ const memT = (id) => {
 const memoryImpl = {
   async createTreasury(t) { const o = memT(t.subOrgId); o.doc = { ...t, createdAt: nowIso() }; return o.doc; },
   async getTreasury(id) { return mem.treasuries.has(id) ? { ...memT(id).doc } : null; },
+  async listTreasuries() { return [...mem.treasuries.values()].map((o) => ({ id: o.id, ...o.doc })); },
   async updateTreasury(id, patch) { const o = memT(id); o.doc = { ...o.doc, ...patch, updatedAt: nowIso() }; return o.doc; },
   async emailIndexGet(email) { return mem.emailIndex.get(lc(email)) || null; },
   async emailIndexSet(email, v) { mem.emailIndex.set(lc(email), v); },
@@ -89,6 +90,7 @@ const listDocs = async (q) => (await q.get()).docs.map((d) => ({ id: d.id, ...d.
 const firestoreImpl = {
   async createTreasury(t) { await tRef(t.subOrgId).set({ ...t, createdAt: nowIso() }); return t; },
   async getTreasury(id) { return withId(await tRef(id).get()); },
+  async listTreasuries() { return listDocs(fs.collection("treasuries")); },
   async updateTreasury(id, patch) { await tRef(id).set({ ...patch, updatedAt: nowIso() }, { merge: true }); return this.getTreasury(id); },
   async emailIndexGet(email) { return withId(await eRef(email).get()); },
   async emailIndexSet(email, v) { await eRef(email).set(v); },

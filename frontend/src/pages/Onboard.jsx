@@ -1,10 +1,18 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useOrg } from "../state/OrgContext.jsx";
 import { Icon } from "../components/Icons.jsx";
 import GoogleSignInButton from "../components/GoogleSignInButton.jsx";
 import { getTheme, toggleTheme } from "../lib/theme.js";
 import { initialsOf } from "../lib/format.js";
+
+// What we show off on the left panel. Icons resolve from the shared Icon set.
+const FEATURES = [
+  { icon: "shield", title: "Amounts stay private", desc: "Balances and payouts are encrypted, only your team can read them." },
+  { icon: "team", title: "Approved by your team", desc: "Every payout needs N-of-M sign-off from your admins. No single key can move funds." },
+  { icon: "coin", title: "Multi-token, multi-chain", desc: "Switch networks in a click." },
+  { icon: "send", title: "Single & batch payouts", desc: "Pay one recipient or hundreds at once." },
+];
 
 // Entry point. Three views: the start card (Sign in / Create organisation + Google), the email OTP
 // code step, and — when you Continue with Google on an account that has NO org yet — a one-field
@@ -21,8 +29,18 @@ export default function Onboard() {
   const [code, setCode] = useState("");
   const [err, setErr] = useState(null);
   const [theme, setTheme] = useState(getTheme());
+  const heroRef = useRef(null);
 
   useEffect(() => { if (sp.get("email")) setMode("signin"); }, [sp]);
+
+  // Cursor-follow spotlight on the left panel (writes CSS vars, no re-render).
+  const onHeroMove = (e) => {
+    const el = heroRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    el.style.setProperty("--mx", `${((e.clientX - r.left) / r.width) * 100}%`);
+    el.style.setProperty("--my", `${((e.clientY - r.top) / r.height) * 100}%`);
+  };
 
   const guard = (fn) => async (...args) => { setErr(null); try { await fn(...args); } catch (e) { setErr(e?.message || String(e)); } };
 
@@ -41,81 +59,117 @@ export default function Onboard() {
   const Spin = () => <span className="spinner" style={{ margin: 0 }} />;
 
   return (
-    <div className="gate">
-      <button className="iconbtn" style={{ position: "fixed", top: 20, right: 20 }} onClick={() => setTheme(toggleTheme())} title="Toggle theme">
+    <div className="gate onboard">
+      <button className="iconbtn" style={{ position: "fixed", top: 20, right: 20, zIndex: 5 }} onClick={() => setTheme(toggleTheme())} title="Toggle theme">
         {theme === "dark" ? <Icon.sun size={17} /> : <Icon.moon size={17} />}
       </button>
 
-      <div className="box auth-box">
-        <img className="auth-logo" src="/Logo.png" alt="Stabletrust Pro" />
-        <h1 className="auth-title">{cfg?.appName || "Stabletrust Pro"}</h1>
-        <p className="auth-sub">Confidential payouts for your organisation.</p>
-
-        {gpending ? (
-          /* ── Google onboarding: org name + your name only ── */
-          <div className="card auth-card">
-            <h3 style={{ margin: "0 0 4px" }}>Set up your organisation</h3>
-            <br />
-            <div className="auth-chip">
-              <div className="av">{initialsOf(gpending.email)}</div>
-              <div><div className="who">Signed in with Google</div><div className="whoe">{gpending.email}</div></div>
+      <div className="onboard-split">
+        {/* ── LEFT: brand + features ── */}
+        <aside className="onboard-hero" ref={heroRef} onMouseMove={onHeroMove}>
+          <div className="hero-spot" aria-hidden="true" />
+          <div className="hero-inner">
+            <div className="hero-brand">
+              <img src="/Logo.png" alt="" />
+              <span>{cfg?.appName || "Stabletrust Pro"}</span>
             </div>
-            <label className="fld">Organisation name*</label>
-            <input value={orgName} onChange={(e) => setOrgName(e.target.value)} placeholder="" autoFocus onKeyDown={(e) => e.key === "Enter" && orgName.trim() && createGoogleOrg()} />
-            <label className="fld" style={{ marginTop: 12 }}>Your name*</label>
-            <input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="" onKeyDown={(e) => e.key === "Enter" && orgName.trim() && createGoogleOrg()} />
-            <button className="btn primary big block" style={{ marginTop: 16 }} disabled={busy || !orgName.trim()} onClick={createGoogleOrg}>
-              {busy ? <Spin /> : <>Create organisation <Icon.chevR size={16} /></>}
-            </button>
-            <p className="auth-foot"> <br /> <span className="auth-link" onClick={backToStart}>← Use a different account</span></p>
-          </div>
-        ) : pending ? (
-          /* ── email OTP code ── */
-          <div className="card auth-card">
-            <h3 style={{ margin: "0 0 4px" }}>Check your email</h3>
-            <p className="csub" style={{ marginBottom: 16 }}>We sent a one-time code to <b style={{ color: "var(--ink)" }}>{pending.email}</b>.</p>
-            <label className="fld">Enter the code</label>
-            <input value={code} onChange={(e) => setCode(e.target.value.replace(/\s/g, "").slice(0, 9))} placeholder="6-digit code" autoFocus style={{ letterSpacing: "0.3em", fontSize: 18, textAlign: "center" }} onKeyDown={(e) => e.key === "Enter" && code.length >= 6 && verify()} />
-            <button className="btn primary big block" style={{ marginTop: 14 }} disabled={busy || code.length < 6} onClick={verify}>
-              {busy ? <Spin /> : <><Icon.shield size={16} /> {mode === "create" ? "Create & sign in" : "Sign in"}</>}
-            </button>
-            <p className="auth-foot"><span className="auth-link" onClick={backToStart}>← Use a different email</span></p>
-          </div>
-        ) : (
-          /* ── start: tabs + form + google ── */
-          <div className="card auth-card">
-            <div className="seg">
-              <button className={mode === "signin" ? "on" : ""} onClick={() => { setMode("signin"); setErr(null); }}>Sign in</button>
-              <button className={mode === "create" ? "on" : ""} onClick={() => { setMode("create"); setErr(null); }}>Create organisation</button>
-            </div>
+            <h1 className="hero-title">Confidential payouts,<br /> run by your <span className="accent">team</span>.</h1>
+            <p className="hero-lede">A shared treasury for your payments.</p>
 
-            {mode === "create" && (
-              <>
-                <label className="fld">Organisation name</label>
-                <input value={orgName} onChange={(e) => setOrgName(e.target.value)} placeholder="Organisation name" />
-                <label className="fld" style={{ marginTop: 12 }}>Your name</label>
-                <input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="Your name" />
-                <label className="fld" style={{ marginTop: 12 }}>Email</label>
-              </>
+            <ul className="hero-features">
+              {FEATURES.map((f) => {
+                const Ico = Icon[f.icon];
+                return (
+                  <li className="feat" key={f.title}>
+                    <span className="fi"><Ico size={19} /></span>
+                    <div><div className="ft">{f.title}</div><div className="fd">{f.desc}</div></div>
+                  </li>
+                );
+              })}
+            </ul>
+
+            <div className="hero-chips">
+              <span className="hero-chip"><Icon.check size={13} /> Non-custodial</span>
+              <span className="hero-chip"><Icon.check size={13} /> Turnkey-secured</span>
+              <span className="hero-chip"><Icon.check size={13} /> Multi-chain</span>
+            </div>
+          </div>
+        </aside>
+
+        {/* ── RIGHT: sign in ── */}
+        <main className="onboard-auth">
+          <div className="box auth-box">
+            <img className="auth-logo" src="/Logo.png" alt="Stabletrust Pro" />
+            <h1 className="auth-title">{cfg?.appName || "Stabletrust Pro"}</h1>
+            <p className="auth-sub">Confidential payouts for your organisation.</p>
+
+            {gpending ? (
+              /* ── Google onboarding: org name + your name only ── */
+              <div className="card auth-card">
+                <h3 style={{ margin: "0 0 4px" }}>Set up your organisation</h3>
+                <br />
+                <div className="auth-chip">
+                  <div className="av">{initialsOf(gpending.email)}</div>
+                  <div><div className="who">Signed in with Google</div><div className="whoe">{gpending.email}</div></div>
+                </div>
+                <label className="fld">Organisation name*</label>
+                <input value={orgName} onChange={(e) => setOrgName(e.target.value)} placeholder="" autoFocus onKeyDown={(e) => e.key === "Enter" && orgName.trim() && createGoogleOrg()} />
+                <label className="fld" style={{ marginTop: 12 }}>Your name*</label>
+                <input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="" onKeyDown={(e) => e.key === "Enter" && orgName.trim() && createGoogleOrg()} />
+                <button className="btn primary big block" style={{ marginTop: 16 }} disabled={busy || !orgName.trim()} onClick={createGoogleOrg}>
+                  {busy ? <Spin /> : <>Create organisation <Icon.chevR size={16} /></>}
+                </button>
+                <p className="auth-foot"> <br /> <span className="auth-link" onClick={backToStart}>← Use a different account</span></p>
+              </div>
+            ) : pending ? (
+              /* ── email OTP code ── */
+              <div className="card auth-card">
+                <h3 style={{ margin: "0 0 4px" }}>Check your email</h3>
+                <p className="csub" style={{ marginBottom: 16 }}>We sent a one-time code to <b style={{ color: "var(--ink)" }}>{pending.email}</b>.</p>
+                <label className="fld">Enter the code</label>
+                <input value={code} onChange={(e) => setCode(e.target.value.replace(/\s/g, "").slice(0, 9))} placeholder="6-digit code" autoFocus style={{ letterSpacing: "0.3em", fontSize: 18, textAlign: "center" }} onKeyDown={(e) => e.key === "Enter" && code.length >= 6 && verify()} />
+                <button className="btn primary big block" style={{ marginTop: 14 }} disabled={busy || code.length < 6} onClick={verify}>
+                  {busy ? <Spin /> : <><Icon.shield size={16} /> {mode === "create" ? "Create & sign in" : "Sign in"}</>}
+                </button>
+                <p className="auth-foot"><span className="auth-link" onClick={backToStart}>← Use a different email</span></p>
+              </div>
+            ) : (
+              /* ── start: tabs + form + google ── */
+              <div className="card auth-card">
+                <div className="seg">
+                  <button className={mode === "signin" ? "on" : ""} onClick={() => { setMode("signin"); setErr(null); }}>Sign in</button>
+                  <button className={mode === "create" ? "on" : ""} onClick={() => { setMode("create"); setErr(null); }}>Create organisation</button>
+                </div>
+
+                {mode === "create" && (
+                  <>
+                    <label className="fld">Organisation name</label>
+                    <input value={orgName} onChange={(e) => setOrgName(e.target.value)} placeholder="Organisation name" />
+                    <label className="fld" style={{ marginTop: 12 }}>Your name</label>
+                    <input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="Your name" />
+                    <label className="fld" style={{ marginTop: 12 }}>Email</label>
+                  </>
+                )}
+                {mode === "signin" && <label className="fld">Email</label>}
+                <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" type="email" onKeyDown={(e) => e.key === "Enter" && email && sendCode()} />
+                <button className="btn primary big block" style={{ marginTop: 14 }} disabled={busy || !email} onClick={sendCode}>
+                  {busy ? <Spin /> : <>{mode === "create" ? "Create organisation" : "Continue with email"} <Icon.chevR size={16} /></>}
+                </button>
+
+                <div className="or-div">or</div>
+                <GoogleSignInButton onCredential={onGoogle} onError={setErr} disabled={busy} />
+
+                <p className="auth-foot">
+                  {mode === "create"
+                    ? "You'll be the owner. Add team members + set the approval threshold after setup."
+                    : ""}
+                </p>
+              </div>
             )}
-            {mode === "signin" && <label className="fld">Email</label>}
-            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" type="email" onKeyDown={(e) => e.key === "Enter" && email && sendCode()} />
-            <button className="btn primary big block" style={{ marginTop: 14 }} disabled={busy || !email} onClick={sendCode}>
-              {busy ? <Spin /> : <>{mode === "create" ? "Create organisation" : "Continue with email"} <Icon.chevR size={16} /></>}
-            </button>
 
-            <div className="or-div">or</div>
-            <GoogleSignInButton onCredential={onGoogle} onError={setErr} disabled={busy} />
-
-            <p className="auth-foot">
-              {mode === "create"
-                ? "You'll be the owner. Add team members + set the approval threshold after setup."
-                : ""}
-            </p>
+            {err && <p className="hint" style={{ marginTop: 14, color: "var(--err)" }}>{err}</p>}
           </div>
-        )}
-
-        {err && <p className="hint" style={{ marginTop: 14, color: "var(--err)" }}>{err}</p>}
+        </main>
       </div>
     </div>
   );
