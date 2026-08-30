@@ -44,6 +44,13 @@ export const api = {
   claim: (chainId) => j("/api/claim", { method: "POST", body: JSON.stringify({ chainId }) }),
   proposePayout: (p) => j("/api/payouts", { method: "POST", body: JSON.stringify(p) }),
   rejectPayout: (id) => j(`/api/payouts/${id}/rejected`, { method: "POST" }),
+  // app-approval N-of-M batches (Option A): approve at the app layer, execute 1-of-M via backend root
+  createBatch: (p) => j("/api/batches", { method: "POST", body: JSON.stringify(p) }),
+  listBatches: () => j("/api/batches"),
+  approveBatch: (id) => j(`/api/batches/${id}/approve`, { method: "POST" }),
+  rejectBatch: (id) => j(`/api/batches/${id}/rejected`, { method: "POST" }),
+  signBatchRow: (id, body) => j(`/api/batches/${id}/sign-row`, { method: "POST", body: JSON.stringify(body) }),
+  batchProgress: (id, body) => j(`/api/batches/${id}/progress`, { method: "POST", body: JSON.stringify(body) }),
   // recipients
   recipients: () => j("/api/recipients"),
   addRecipient: (label, address) => j("/api/recipients", { method: "POST", body: JSON.stringify({ label, address }) }),

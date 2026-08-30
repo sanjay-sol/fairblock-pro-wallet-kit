@@ -107,7 +107,7 @@ export default function SinglePayout() {
       {settling && (
         <div className="card" style={{ marginBottom: 16, borderColor: "var(--brand)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <span className="spinner" />
-          <span>A previous operation is settling onchain - you can send again in a few seconds.</span>
+          <span>A previous operation is settling onchain, you can send again in a few seconds.</span>
         </div>
       )}
 
@@ -162,8 +162,8 @@ export default function SinglePayout() {
             </div>
           </div>
 
-          {blockedByAcct && <p className="hint" style={{ marginTop: 12, color: "var(--err)" }}>✗ Recipient has no confidential account — switch to Direct, or have them onboard.</p>}
-          {!enough && validAmt && <p className="hint" style={{ marginTop: 12, color: "var(--warn)" }}>⚠ Amount exceeds confidential balance ({fmtAmount(balances.confidential.available, symbol)}).</p>}
+          {blockedByAcct && <p className="hint" style={{ marginTop: 12, color: "var(--err)" }}>✗ Recipient has no confidential account - switch to Direct, or have them onboard.</p>}
+          {!enough && validAmt && <p className="hint" style={{ marginTop: 12, color: "var(--warn)" }}>⚠ Amount exceeds confidential balance ({fmtAmount(balances.confidential.available, symbol)})</p>}
 
           <button className="btn primary big block" style={{ marginTop: 18 }} disabled={!validAddr || !validAmt || !enough || blockedByAcct || !!settling} onClick={() => setStep(1)}>Continue <Icon.chevR size={16} /></button>
         </div>

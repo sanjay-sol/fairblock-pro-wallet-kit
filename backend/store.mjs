@@ -7,6 +7,10 @@
 //   treasuries/{subOrgId}/payouts/{id}    activityId, kind, recipient, amountEnc, tokenSymbol,
 //                                         status(pending|completed|failed|rejected), unsignedTx, nonce,
 //                                         createdBy, createdAt, txHash, note
+//   treasuries/{subOrgId}/batches/{id}    APP-APPROVAL N-of-M batch (no Turnkey co-sign): delivery,
+//                                         chainId, token, threshold, rows[{recipient,recipientLabel,amountEnc}],
+//                                         approvals[email], status(pending_approval|approved|executing|
+//                                         completed|failed|rejected), rowProgress{i:{status,txHash}}, createdBy
 //   treasuries/{subOrgId}/recipients/{id} label, address, addedBy, addedAt
 //   emailIndex/{email}                    subOrgId, role   ← one email = one treasury (invariant + routing)
 //
@@ -55,7 +59,7 @@ export const storeMode = () => mode;
 // ─────────────────────────── in-memory impl (tests) ───────────────────────────
 const mem = { treasuries: new Map(), emailIndex: new Map() };
 const memT = (id) => {
-  if (!mem.treasuries.has(id)) mem.treasuries.set(id, { id, doc: {}, members: new Map(), payouts: new Map(), recipients: new Map() });
+  if (!mem.treasuries.has(id)) mem.treasuries.set(id, { id, doc: {}, members: new Map(), payouts: new Map(), batches: new Map(), recipients: new Map() });
   return mem.treasuries.get(id);
 };
 const memoryImpl = {
@@ -75,6 +79,10 @@ const memoryImpl = {
   async getPayout(id, pid) { return memT(id).payouts.get(pid) || null; },
   async listPayouts(id) { return [...memT(id).payouts.values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)); },
   async updatePayout(id, pid, patch) { const o = memT(id); const p = o.payouts.get(pid); if (p) o.payouts.set(pid, { ...p, ...patch }); return o.payouts.get(pid); },
+  async addBatch(id, b) { const o = memT(id); const rec = { id: rid("bt"), createdAt: nowIso(), ...b }; o.batches.set(rec.id, rec); return rec; },
+  async getBatch(id, bid) { return memT(id).batches.get(bid) || null; },
+  async listBatches(id) { return [...memT(id).batches.values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)); },
+  async updateBatch(id, bid, patch) { const o = memT(id); const b = o.batches.get(bid); if (b) o.batches.set(bid, { ...b, ...patch }); return o.batches.get(bid); },
   async addRecipient(id, r) { const o = memT(id); const rec = { id: rid("rc"), addedAt: nowIso(), ...r }; o.recipients.set(rec.id, rec); return rec; },
   async listRecipients(id) { return [...memT(id).recipients.values()]; },
   async removeRecipient(id, rid2) { memT(id).recipients.delete(rid2); },
@@ -104,6 +112,10 @@ const firestoreImpl = {
   async getPayout(id, pid) { return withId(await sub(id, "payouts").doc(pid).get()); },
   async listPayouts(id) { return (await listDocs(sub(id, "payouts"))).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)); },
   async updatePayout(id, pid, patch) { await sub(id, "payouts").doc(pid).set(patch, { merge: true }); return this.getPayout(id, pid); },
+  async addBatch(id, b) { const ref = await sub(id, "batches").add({ createdAt: nowIso(), ...b }); return { id: ref.id, createdAt: nowIso(), ...b }; },
+  async getBatch(id, bid) { return withId(await sub(id, "batches").doc(bid).get()); },
+  async listBatches(id) { return (await listDocs(sub(id, "batches"))).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)); },
+  async updateBatch(id, bid, patch) { await sub(id, "batches").doc(bid).set(patch, { merge: true }); return this.getBatch(id, bid); },
   async addRecipient(id, r) { const ref = await sub(id, "recipients").add({ addedAt: nowIso(), ...r }); return { id: ref.id, ...r }; },
   async listRecipients(id) { return listDocs(sub(id, "recipients")); },
   async removeRecipient(id, rid2) { await sub(id, "recipients").doc(rid2).delete().catch(() => {}); },

@@ -17,8 +17,12 @@ const NAV = [
 ];
 
 export default function Sidebar({ collapsed, onToggle }) {
-  const { treasury, payouts, session, logout } = useOrg();
-  const pendingCount = payouts.filter((p) => p.status === "pending").length;
+  const { treasury, payouts, appBatches, session, logout } = useOrg();
+  // Pending things needing approval = single/Turnkey payouts + app-approval N-of-M batches
+  // (batches live in their OWN array, so without this they never lit the badge — the thing that
+  // made members miss an owner-proposed batch even though it showed on the Pending page).
+  const pendingCount = payouts.filter((p) => p.status === "pending").length
+    + (appBatches || []).filter((b) => b.status === "pending_approval").length;
 
   const indRef = useRef(null);
   const moveHover = (el) => { const ind = indRef.current; if (!ind || !el) return; ind.style.transform = `translateY(${el.offsetTop}px)`; ind.style.height = `${el.offsetHeight}px`; ind.style.opacity = "1"; };

@@ -79,6 +79,34 @@ export class ConsensusSigner extends AbstractSigner {
 
 export function makeConsensusSigner(provider) { return new ConsensusSigner(provider); }
 
+// ── Root-proxy signer (app-approval N-of-M batch, Option A) ──────────────────
+// signMessage / signTypedData (the ElGamal-key derivation, READ 1-of-M) STAY on the member's
+// session — inherited from ConsensusSigner. Only signTransaction is overridden: it does NOT
+// co-sign through Turnkey; it hands the UNSIGNED tx to the backend, which validates it against the
+// APP-APPROVED batch and root-signs it (bypassing the N-of-M SPEND policy). So a batch settles
+// "1-of-M underneath", gated by app-layer approvals — while the ElGamal key never leaves the client
+// (a compromised backend can only sign an already-approved transfer, never forge a new one).
+let _batchSignCtx = null;                        // { batchId, rowIndex } — set per row before signing
+export const setBatchSignContext = (c) => { _batchSignCtx = c; };
+export const clearBatchSignContext = () => { _batchSignCtx = null; };
+let _rowSigner = null;                            // async (unsignedTxHex, batchId, rowIndex) => signedTxHex
+export const setRowSigner = (fn) => { _rowSigner = fn; };
+
+export class RootProxySigner extends ConsensusSigner {
+  connect(provider) { return new RootProxySigner(provider); }
+  async signTransaction(transaction) {
+    if (!_batchSignCtx || !_rowSigner) throw new Error("batch sign context not set");
+    const { from, to, ...txn } = copyRequest(transaction);
+    const resolved = await resolveProperties({ to: transaction.to ? resolveAddress(transaction.to, this.provider) : undefined });
+    const tx = Transaction.from({ ...txn, ...(resolved.to ? { to: resolved.to } : {}) });
+    // The backend re-derives a collision-safe nonce + fresh fees and root-signs; we send only the
+    // unsigned calldata (which carries the confidential-transfer proof) + which approved row this is.
+    const signed = await _rowSigner(tx.unsignedSerialized.slice(2), _batchSignCtx.batchId, _batchSignCtx.rowIndex);
+    return signed.startsWith("0x") ? signed : `0x${signed}`;
+  }
+}
+export function makeRootProxySigner(provider) { return new RootProxySigner(provider); }
+
 // Cast this admin's approval vote on a pending payout activity. We fetch the activity's
 // CURRENT fingerprint with THIS admin's own session first (fingerprints are intent+timestamp
 // hashes; using a fresh one avoids any staleness, and confirms the session can read the org).

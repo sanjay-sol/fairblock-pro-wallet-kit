@@ -269,7 +269,8 @@ app.delete("/api/members/:email", wrap(async (req, res) => {
   // no longer be signed), and can drop the team below the approval threshold. Keeping the team stable
   // until all payouts settle or are rejected avoids that whole class of edge cases.
   const pend = (await store.listPayouts(c.subOrgId)).filter((p) => p.status === "pending");
-  if (pend.length) return res.status(409).json({ error: `Resolve the ${pend.length} pending payout(s) first — you can't remove a member while payouts are awaiting approval.` });
+  const pendBatches = (await store.listBatches(c.subOrgId)).filter((b) => b.status === "pending_approval");
+  if (pend.length + pendBatches.length) return res.status(409).json({ error: `Resolve the ${pend.length + pendBatches.length} pending approval(s) first — you can't remove a member while payouts or batches are awaiting approval.` });
   const remaining = (await store.listMembers(c.subOrgId)).length - 1; // members left after this removal (owner always stays)
   const threshold = c.treasury.threshold || 1;
   if (m.userId) await removeMember({ rootKey: c.treasury.rootKey, userId: m.userId }).catch((e) => console.error("[removeMember tk]", e?.message));
@@ -555,6 +556,149 @@ app.post("/api/payouts/:id/rejected", wrap(async (req, res) => {
   // nonce that's already used. (The UI only offers Reject on pending, but guard the API too.)
   if (p.status !== "pending") return res.status(409).json({ error: `can only reject a pending payout (this one is already ${p.status})` });
   res.json(await store.updatePayout(c.subOrgId, req.params.id, { status: "rejected" }));
+}));
+
+// ── APP-APPROVAL N-of-M BATCH (Option A) ──────────────────────────────────────
+// A batch of confidential transfers approved at the APP layer (our DB + session tokens),
+// then executed 1-of-M underneath via the backend ROOT key — NOT co-signed per row through
+// Turnkey. Teammates approve ONCE (not K Turnkey activities); when approvals reach the
+// treasury threshold the PROPOSER's client builds each row's proof (the ElGamal key stays on
+// the client) and hands the UNSIGNED tx here to be root-signed. `sign-row` is the ONLY place
+// the root key signs a transfer, and ONLY for a transferConfidential to an APPROVED recipient
+// on a known diamond (or a fund-neutral applyPending) — never an arbitrary tx.
+const DIAMOND_CT_ABI = new ethers.Interface([
+  "function transferConfidential(address recipient, address token, bytes proof, bool offchainZKP)",
+  "function applyPending()",
+]);
+const SEL_TRANSFER = DIAMOND_CT_ABI.getFunction("transferConfidential").selector;
+const SEL_APPLY = DIAMOND_CT_ABI.getFunction("applyPending").selector;
+const batchApproved = (b) => (b.approvals || []).length >= (b.threshold || 1);
+
+async function notifyAdminsOfBatch(c, batch) {
+  try {
+    const members = await store.listMembers(c.subOrgId);
+    const others = members.filter((m) => m.status === "active" && m.email && m.email !== c.caller);
+    if (!others.length) return;
+    const approvals = `${batch.threshold}-of-${members.length}`;
+    const proposerName = c.member?.name || c.caller;
+    const reviewUrl = `${APP_URL}/pending`;
+    await Promise.all(others.map((m) => sendPayoutProposal({ to: m.email, orgName: c.treasury.name, proposerName, approvals, reviewUrl, isBatch: true })
+      .catch((e) => console.error("[batch notify]", m.email, e?.message))));
+  } catch (e) { console.error("[batch notify]", e?.message); }
+}
+
+// Propose a batch — rows carry client-encrypted amounts; the threshold is snapshotted. The
+// proposer's own proposal counts as their approval (like a Turnkey proposer's first vote).
+app.post("/api/batches", wrap(async (req, res) => {
+  const c = await ctx(req, res, "admin"); if (!c) return;
+  const b = req.body || {};
+  const rows = Array.isArray(b.rows) ? b.rows : [];
+  if (!rows.length) return res.status(400).json({ error: "at least one row is required" });
+  for (const r of rows) if (!r.recipient || !ethers.isAddress(r.recipient)) return res.status(400).json({ error: `invalid recipient: ${r.recipient}` });
+  const threshold = c.treasury.threshold || 1;
+  const approvals = [c.caller];
+  const batch = await store.addBatch(c.subOrgId, {
+    delivery: b.delivery || "confidential", chainId: cidOf(b.chainId), token: b.token || null, threshold,
+    rows: rows.map((r) => ({ recipient: r.recipient, recipientLabel: r.recipientLabel || null, amountEnc: r.amountEnc || null })),
+    approvals, status: approvals.length >= threshold ? "approved" : "pending_approval", rowProgress: {},
+    createdBy: c.caller, createdByName: c.member?.name || c.caller,
+  });
+  if (batch.status === "pending_approval") notifyAdminsOfBatch(c, batch); // fire-and-forget
+  res.json(batch);
+}));
+
+app.get("/api/batches", wrap(async (req, res) => {
+  const c = await ctx(req, res); if (!c) return;
+  res.json(await store.listBatches(c.subOrgId));
+}));
+
+// Approve a batch (app-layer, authenticated by the session token). Distinct active admins only;
+// the proposer already counts. Flips to "approved" once the threshold is met.
+app.post("/api/batches/:id/approve", wrap(async (req, res) => {
+  const c = await ctx(req, res, "admin"); if (!c) return;
+  const batch = await store.getBatch(c.subOrgId, req.params.id);
+  if (!batch) return res.status(404).json({ error: "batch not found" });
+  if (batch.status !== "pending_approval") return res.status(409).json({ error: `batch is already ${batch.status}` });
+  const approvals = [...new Set([...(batch.approvals || []).map((a) => String(a).toLowerCase()), c.caller.toLowerCase()])];
+  const status = approvals.length >= (batch.threshold || 1) ? "approved" : "pending_approval";
+  res.json(await store.updateBatch(c.subOrgId, batch.id, { approvals, status }));
+}));
+
+app.post("/api/batches/:id/rejected", wrap(async (req, res) => {
+  const c = await ctx(req, res, "admin"); if (!c) return;
+  const batch = await store.getBatch(c.subOrgId, req.params.id);
+  if (!batch) return res.status(404).json({ error: "batch not found" });
+  if (!["pending_approval", "approved"].includes(batch.status)) return res.status(409).json({ error: `cannot reject a ${batch.status} batch` });
+  res.json(await store.updateBatch(c.subOrgId, batch.id, { status: "rejected" }));
+}));
+
+// Root-sign ONE batch row. The proposer's client builds the confidential-transfer proof + the
+// UNSIGNED tx and posts it here. We validate it targets this chain's diamond and is a
+// transferConfidential to the APPROVED recipient (or a fund-neutral applyPending), assign a
+// collision-safe nonce + fresh fees, root-sign, and return the signed tx for the client to
+// broadcast (it then waits for on-chain finalization before the next row).
+app.post("/api/batches/:id/sign-row", wrap(async (req, res) => {
+  const c = await ctx(req, res, "admin"); if (!c) return;
+  const batch = await store.getBatch(c.subOrgId, req.params.id);
+  if (!batch) return res.status(404).json({ error: "batch not found" });
+  if (!["approved", "executing"].includes(batch.status)) return res.status(409).json({ error: `batch is ${batch.status}, not approved` });
+  if (!batchApproved(batch)) return res.status(409).json({ error: "batch has not reached its approval threshold" });
+  const { unsignedTx, rowIndex } = req.body || {};
+  if (!unsignedTx) return res.status(400).json({ error: "unsignedTx is required" });
+  let parsed;
+  try { parsed = ethers.Transaction.from(unsignedTx.startsWith("0x") ? unsignedTx : `0x${unsignedTx}`); }
+  catch { return res.status(400).json({ error: "could not parse unsignedTx" }); }
+  const cid = cidOf(parsed.chainId ?? batch.chainId);
+  const chain = getChain(cid), prov = providerFor(cid);
+  if (!chain || !prov) return res.status(400).json({ error: `unsupported chainId ${cid}` });
+  if (!parsed.to || parsed.to.toLowerCase() !== chain.diamondAddress.toLowerCase()) return res.status(400).json({ error: "tx target is not the confidential diamond" });
+  const data = parsed.data || "0x";
+  const selector = data.slice(0, 10);
+  let recordRow = null;
+  if (selector === SEL_TRANSFER) {
+    let dec; try { dec = DIAMOND_CT_ABI.decodeFunctionData("transferConfidential", data); }
+    catch { return res.status(400).json({ error: "malformed transferConfidential calldata" }); }
+    const recipient = String(dec[0]), tok = String(dec[1]);
+    const row = (batch.rows || [])[Number(rowIndex)];
+    if (!row) return res.status(400).json({ error: `no row ${rowIndex} in this batch` });
+    if (recipient.toLowerCase() !== String(row.recipient).toLowerCase()) return res.status(400).json({ error: "recipient does not match the approved row" });
+    if (batch.token?.address && tok.toLowerCase() !== String(batch.token.address).toLowerCase()) return res.status(400).json({ error: "token does not match the batch" });
+    recordRow = { row, recipient, token: tok };
+  } else if (selector !== SEL_APPLY) {
+    return res.status(400).json({ error: "only a transferConfidential (approved row) or applyPending may be batch-signed" });
+  }
+  // Server-authoritative nonce (never trust the client's) — respects other in-flight payouts.
+  const [onchain, list, fees] = await Promise.all([prov.getTransactionCount(c.treasury.address, "pending"), store.listPayouts(c.subOrgId), feeFields(prov)]);
+  const reserved = list.filter((p) => ["pending", "submitted"].includes(p.status) && p.nonce != null && cidOf(p.chainId) === cid).map((p) => Number(p.nonce));
+  const nonce = Math.max(onchain, reserved.length ? Math.max(...reserved) + 1 : 0);
+  const gasLimit = (parsed.gasLimit && parsed.gasLimit > 0n) ? parsed.gasLimit : 1500000n; // reuse the SDK's estimate (accurate for the proof size)
+  const rebuilt = { to: parsed.to, data, value: parsed.value ?? 0n, chainId: cid, nonce, gasLimit, ...fees };
+  const unsigned = ethers.Transaction.from(rebuilt).unsignedSerialized.slice(2);
+  const signed = await rootSignTx({ rootKey: c.treasury.rootKey, address: c.treasury.address, unsignedTransaction: unsigned });
+  const txHash = ethers.Transaction.from(signed).hash;
+  if (recordRow) {
+    await store.addPayout(c.subOrgId, {
+      kind: "transfer", recipient: recordRow.recipient, recipientLabel: recordRow.row.recipientLabel || null,
+      amountEnc: recordRow.row.amountEnc || null, tokenSymbol: batch.token?.symbol || "USDC", token: recordRow.token,
+      delivery: "confidential", nonce, batchId: batch.id, status: "submitted", txHash, explorerUrl: explorerTxFor(cid, txHash),
+      createdBy: c.caller, createdByName: c.member?.name || c.caller, chainId: cid,
+    });
+    await store.updateBatch(c.subOrgId, batch.id, { status: "executing", rowProgress: { ...(batch.rowProgress || {}), [rowIndex]: { status: "submitted", txHash } } });
+  }
+  console.log(`[batch ${batch.id}] root-signed row ${rowIndex ?? "-"} sel=${selector} nonce=${nonce} ${txHash}`);
+  res.json({ signedTx: signed, txHash });
+}));
+
+// The proposer's client reports per-row outcome + final done/failed (drives the UI + resume).
+app.post("/api/batches/:id/progress", wrap(async (req, res) => {
+  const c = await ctx(req, res, "admin"); if (!c) return;
+  const batch = await store.getBatch(c.subOrgId, req.params.id);
+  if (!batch) return res.status(404).json({ error: "batch not found" });
+  const b = req.body || {};
+  const patch = {};
+  if (b.rowIndex != null && b.status) patch.rowProgress = { ...(batch.rowProgress || {}), [b.rowIndex]: { status: b.status, txHash: b.txHash || null, error: b.error || null } };
+  if (b.done && !["completed", "failed", "rejected"].includes(batch.status)) patch.status = b.failed ? "failed" : "completed";
+  res.json(Object.keys(patch).length ? await store.updateBatch(c.subOrgId, batch.id, patch) : batch);
 }));
 
 // ── recipients address book ──

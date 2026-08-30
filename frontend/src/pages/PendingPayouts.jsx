@@ -25,8 +25,9 @@ const StuckBadge = () => (
 );
 
 export default function PendingPayouts() {
-  const { payouts, approvePayout, approveBatch, rejectPayout, threshold, signerCount, session, treasury, busy } = useOrg();
+  const { payouts, approvePayout, approveBatch, rejectPayout, threshold, signerCount, session, treasury, busy, appBatches, approveAppBatch, rejectAppBatch } = useOrg();
   const pending = payouts.filter((p) => p.status === "pending");
+  const pendingBatches = (appBatches || []).filter((b) => b.status === "pending_approval");
   const myEmail = (session?.email || "").toLowerCase();
   const canApprove = treasury?.role === "owner" || treasury?.role === "admin";
   const has = (p) => (p.approvals || []).map((a) => String(a).toLowerCase()).includes(myEmail);
@@ -47,10 +48,41 @@ export default function PendingPayouts() {
     <div className="page">
       <div className="page-head"><h1>Pending Payouts</h1></div>
 
-      {pending.length === 0 ? (
+      {pending.length === 0 && pendingBatches.length === 0 ? (
         <div className="card"><EmptyState icon={<Icon.pending size={24} />} title="No pending payouts"></EmptyState></div>
       ) : (
         <div style={{ display: "grid", gap: 14 }}>
+          {pendingBatches.map((b) => {
+            const count = (b.approvals || []).length;
+            const total = (b.rows || []).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+            const iApproved = (b.approvals || []).map((a) => String(a).toLowerCase()).includes(myEmail);
+            return (
+              <div key={b.id} className="card">
+                <div className="between" style={{ flexWrap: "wrap", gap: 12 }}>
+                  <div>
+                    <div className="flex" style={{ gap: 8, alignItems: "center" }}><span className="badge brand">Batch</span><b style={{ fontSize: 16 }}>{(b.rows || []).length} payments</b>{total > 0 && <span className="muted">· {fmtAmount(total, b.token?.symbol)}</span>}<ChainBadge chainId={b.chainId} /></div>
+                    <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Proposed by {b.createdByName || b.createdBy} · {fmtDate(b.createdAt)}</div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div className="flex" style={{ gap: 5, justifyContent: "flex-end", marginBottom: 8, alignItems: "center" }}><Dots total={Math.max(threshold, count)} count={count} /><span className="muted" style={{ fontSize: 12.5, marginLeft: 4 }}>{count}/{threshold} approved</span></div>
+                    <div className="flex" style={{ justifyContent: "flex-end", alignItems: "center", gap: 8 }}>
+                      {canApprove && (iApproved
+                        ? <span className="btn sm" style={{ opacity: .6, pointerEvents: "none" }}><Icon.check size={13} /> You approved</span>
+                        : <AsyncButton className="btn sm primary" onClick={() => approveAppBatch(b.id)} disabled={busy} loadingText="Approving…"><Icon.check size={13} /> Approve batch</AsyncButton>)}
+                      <AsyncButton className="btn sm" onClick={() => rejectAppBatch(b.id)} disabled={busy}><Icon.x size={13} /> Reject</AsyncButton>
+                    </div>
+                  </div>
+                </div>
+                <div className="table-wrap" style={{ marginTop: 12 }}>
+                  <table>
+                    <thead><tr><th>Recipient</th><th>Amount</th></tr></thead>
+                    <tbody>{(b.rows || []).map((r, i) => (<tr key={i}><td>{r.recipientLabel || ""}<div className="mono muted" style={{ fontSize: 12 }}>{short(r.recipient)}</div></td><td className="nowrap">{r.amount != null ? fmtAmount(r.amount, b.token?.symbol) : "—"}</td></tr>))}</tbody>
+                  </table>
+                </div>
+                <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>Approved once at the app layer, then settled 1-of-M by the proposer — no per-payment co-sign.</div>
+              </div>
+            );
+          })}
           {batchGroups.map(([bid, list]) => {
             const count = Math.min(...list.map((p) => (p.approvals || []).length)); // batch = its weakest payout
             const total = list.reduce((s, p) => s + (Number(p.amount) || 0), 0);

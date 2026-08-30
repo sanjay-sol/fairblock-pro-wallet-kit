@@ -4,7 +4,7 @@ import { loadBackendConfig, buildConfig, supportedNetworks } from "../config.js"
 import { networkList, getNetwork, getTokens, loadSelectedChainId, saveSelectedChainId, explorerTx, DEFAULT_CHAIN_ID } from "../networks.js";
 import { api, setApiContext, setAuthErrorHandler } from "../lib/api.js";
 import { newTargetKey, establishSession, restoreSession, clearSession, sessionActive, getSession, patchSession } from "../lib/session.js";
-import { makeConsensusSigner, takeLastPending, approveActivity as tkApprove, setNonceOverride, clearNonceOverride } from "../signers.js";
+import { makeConsensusSigner, takeLastPending, approveActivity as tkApprove, setNonceOverride, clearNonceOverride, makeRootProxySigner, setBatchSignContext, clearBatchSignContext, setRowSigner } from "../signers.js";
 import { saveVault, loadVault, clearVault } from "../vault.js";
 import { encryptAmount, decryptAmount } from "../metaCrypto.js";
 import { computeAnalytics } from "../lib/analytics.js";
@@ -77,6 +77,7 @@ export function OrgProvider({ children }) {
   // A batch run lives HERE (not in the BatchPayout page) so it survives navigation: the
   // loop keeps going + progress is preserved even if you leave and come back (task 2).
   const [activeBatch, setActiveBatch] = useState(null); // { id, delivery, willPropose, rows[], progress{i}, running, done, startedAt }
+  const [appBatches, setAppBatches] = useState([]); // app-approval N-of-M batches (list) — drives the approvals UI
   // A single payout also lives HERE so it survives navigation (task: same fix as the batch). The
   // send keeps running + its result (sent / proposed / failed) stays visible on return (task 2).
   const [activeSend, setActiveSend] = useState(null); // { id, recipient, amount, delivery, willPropose, status, txHash, error }
@@ -99,6 +100,8 @@ export function OrgProvider({ children }) {
   const vaultRef = useRef(null);     // { address, elgamal: { [chainId]: priv } } — per-chain keys
   const settledRef = useRef(null);   // count of settled payouts last seen → detect new settlements
   const activeBatchRef = useRef(null); // mirror of activeBatch for the fire-and-forget batch loop
+  const reloadBatchesRef = useRef(null); // stable handle to reloadBatches (called from the poll + handlers)
+  const executingAppRef = useRef(false); // true while an app-approval batch is executing (one at a time)
   const activeSendRef = useRef(null);  // mirror of activeSend for the fire-and-forget single send
   const treasurySyncRef = useRef(0);   // last time we re-read the treasury (throttles team/threshold sync)
   const kickedRef = useRef(false);     // set when the API says we're no longer a member → force logout
@@ -293,6 +296,10 @@ export function OrgProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The RootProxySigner hands each unsigned batch row here → the backend root-signs it (Option A).
+  // signBatchRow resolves to { signedTx, txHash }; the signer needs the signed-tx HEX STRING.
+  useEffect(() => { setRowSigner(async (unsignedTx, batchId, rowIndex) => (await api.signBatchRow(batchId, { unsignedTx, rowIndex })).signedTx); }, []);
+
   useEffect(() => { const id = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id); }, []);
   // Re-read the treasury (threshold, team, name, role) at most once per 20s. The owner sees
   // their own threshold change instantly, but OTHER admins only had it at mount — so without
@@ -310,15 +317,16 @@ export function OrgProvider({ children }) {
   // poll fast only while something is pending, and slowly when idle. Refresh once on re-focus.
   useEffect(() => {
     if (!treasury) return;
-    const hasPending = payouts.some((p) => p.status === "pending" || p.status === "submitted");
+    const hasPending = payouts.some((p) => p.status === "pending" || p.status === "submitted")
+      || appBatches.some((x) => ["pending_approval", "approved", "executing"].includes(x.status));
     const interval = hasPending ? 6000 : 45000;
     // Also refresh balances on each tick so unclaimed `pending` (incoming transfers) surfaces on
     // the dashboard + gets a "received" history row within ~45s idle — not only after an op.
-    const id = setInterval(() => { if (treasuryRef.current && !document.hidden) { reloadPayouts(); syncTeam(); refreshBalances(); } }, interval);
-    const onVis = () => { if (!document.hidden && treasuryRef.current) { reloadPayouts(); syncTeam(true); refreshBalances(); } };
+    const id = setInterval(() => { if (treasuryRef.current && !document.hidden) { reloadPayouts(); reloadBatchesRef.current?.(); syncTeam(); refreshBalances(); } }, interval);
+    const onVis = () => { if (!document.hidden && treasuryRef.current) { reloadPayouts(); reloadBatchesRef.current?.(); syncTeam(true); refreshBalances(); } };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
-  }, [treasury, payouts, reloadPayouts, syncTeam, refreshBalances]);
+  }, [treasury, payouts, appBatches, reloadPayouts, syncTeam, refreshBalances]);
 
   // Clear the settling state once the balance reflects OUR op: `available` changed (deposit ↑ / transfer ↓
   // / claim ↑) OR `pending` DECREASED (claim applied / transfer's pre-apply). We deliberately do NOT clear
@@ -578,13 +586,140 @@ export function OrgProvider({ children }) {
     }
   }
 
+  // ── APP-APPROVAL N-of-M BATCH (Option A) ─────────────────────────────────────
+  // The N-of-M batch is approved at the APP layer (our DB + session tokens), then executed
+  // "1-of-M underneath": once approvals reach the threshold, the PROPOSER's client builds each
+  // row's proof (its ElGamal key stays client-side) and the backend ROOT key signs the row (via
+  // /api/batches/:id/sign-row, which only ever signs an approved transferConfidential). Rows settle
+  // serially (each waits for on-chain finalization before the next). Runs from OrgContext so it
+  // survives navigation, and resumes from the record after a reload.
+
+  // Execute an approved app-batch serially. Guarded so only ONE runs, and only on the batch's chain.
+  const executeAppBatch = useCallback((snap) => {
+    if (!snap || snap.kind !== "app" || snap.done) return;
+    if (executingAppRef.current) return;
+    if (cfgRef.current?.chainId !== snap.chainId) return; // only the proposer, on the batch's chain
+    executingAppRef.current = true;
+    const mark = (i, res) => setActiveBatch((b) => (b && b.id === snap.id ? { ...b, progress: { ...b.progress, [i]: res } } : b));
+    setActiveBatch((b) => (b && b.id === snap.id ? { ...b, running: true } : b));
+    if (activeBatchRef.current?.id === snap.id) activeBatchRef.current = { ...activeBatchRef.current, running: true };
+    (async () => {
+      let anyFail = false;
+      try {
+        for (let i = 0; i < snap.rows.length; i++) {
+          if (snap.progress?.[i]?.status === "completed") continue; // resume: skip already-settled rows
+          const row = snap.rows[i];
+          mark(i, { status: "running" });
+          try {
+            if (snap.delivery === "confidential") { const ok = await isActivated(row.address); if (!ok) throw new Error("recipient has no confidential account"); }
+            setBatchSignContext({ batchId: snap.id, rowIndex: i });
+            const signer = makeRootProxySigner(provRef.current);
+            const r = await confidentialTransfer(signer, row.address, snap.token, row.amount, true); // waitForFinalization → serial
+            const txHash = r?.hash || r?.transactionHash || null;
+            mark(i, { status: "completed", txHash });
+            await api.batchProgress(snap.id, { rowIndex: i, status: "completed", txHash }).catch(() => {});
+          } catch (e) {
+            anyFail = true;
+            mark(i, { status: "failed", error: friendlyError(e) });
+            await api.batchProgress(snap.id, { rowIndex: i, status: "failed", error: String(e?.message || e).slice(0, 180) }).catch(() => {});
+            break; // abort the rest — each row's proof is bound to the balance the prior row left
+          } finally { clearBatchSignContext(); }
+        }
+      } finally {
+        setActiveBatch((b) => (b && b.id === snap.id ? { ...b, running: false, done: true } : b));
+        if (activeBatchRef.current?.id === snap.id) activeBatchRef.current = { ...activeBatchRef.current, running: false, done: true };
+        executingAppRef.current = false;
+        await api.batchProgress(snap.id, { done: true, failed: anyFail }).catch(() => {});
+        await Promise.all([refreshBalances(), reloadPayouts()]).catch(() => {});
+      }
+    })();
+  }, [refreshBalances, reloadPayouts]);
+
+  const maybeExecuteAppBatch = useCallback(() => {
+    const b = activeBatchRef.current;
+    if (b && b.kind === "app" && b.status === "approved" && !b.done && !b.running) executeAppBatch(b);
+  }, [executeAppBatch]);
+
+  // Poll app-batches: refresh the approvals list, sync the proposer's active batch, kick execution
+  // once approved, and resume an approved/executing batch this admin proposed but lost (e.g. reload).
+  const reloadBatches = useCallback(async () => {
+    try {
+      const list = await api.listBatches();
+      // Decrypt each row's amount with the key of the chain it was created on (like reloadPayouts),
+      // so the approvals UI can show what's being approved. Amounts stay ciphertext on the wire.
+      const keyFor = (bt) => vaultRef.current?.elgamal?.[bt.chainId] || (Number(bt.chainId) === cfgRef.current?.chainId ? treasuryRef.current?.elgamalPriv : null);
+      const dec = await Promise.all(list.map(async (bt) => {
+        const k = keyFor(bt);
+        return { ...bt, rows: await Promise.all((bt.rows || []).map(async (r) => ({ ...r, amount: r.amountEnc && k ? await decryptAmount(r.amountEnc, k).catch(() => null) : null }))) };
+      }));
+      setAppBatches(dec);
+      const mine = (getSession()?.email || "").toLowerCase();
+      const b = activeBatchRef.current;
+      if (b && b.kind === "app") {
+        const rec = list.find((x) => x.id === b.id);
+        if (rec && (rec.status !== b.status || (rec.approvals || []).length !== (b.approvals || []).length)) {
+          // Functional patch so a concurrent row-progress update is never clobbered; mirror into the ref
+          // (which already carries the latest progress) so maybeExecuteAppBatch sees the fresh status now.
+          setActiveBatch((cur) => (cur && cur.id === b.id ? { ...cur, status: rec.status, approvals: rec.approvals || [], done: cur.done || rec.status === "rejected" } : cur));
+          if (activeBatchRef.current?.id === b.id) activeBatchRef.current = { ...activeBatchRef.current, status: rec.status, approvals: rec.approvals || [], done: activeBatchRef.current.done || rec.status === "rejected" };
+        }
+        maybeExecuteAppBatch();
+      } else if (!b && treasuryRef.current?.elgamalPriv) {
+        const resumable = list.find((x) => String(x.createdBy || "").toLowerCase() === mine
+          && ["approved", "executing"].includes(x.status)
+          && Number(x.chainId) === cfgRef.current?.chainId
+          && (x.rows || []).some((_, i) => (x.rowProgress || {})[i]?.status !== "completed"));
+        if (resumable) {
+          const rows = await Promise.all((resumable.rows || []).map(async (r) => ({ address: r.recipient, label: r.recipientLabel, amount: await decryptAmount(r.amountEnc, treasuryRef.current.elgamalPriv).catch(() => null) })));
+          if (rows.every((r) => r.amount != null)) {
+            const snap = { id: resumable.id, kind: "app", delivery: resumable.delivery, willPropose: true, threshold: resumable.threshold, approvals: resumable.approvals || [], status: resumable.status, token: resumable.token, chainId: Number(resumable.chainId), rows, progress: { ...(resumable.rowProgress || {}) }, running: false, done: false, startedAt: Date.now() };
+            setActiveBatch(snap); activeBatchRef.current = snap;
+            maybeExecuteAppBatch();
+          }
+        }
+      }
+    } catch (e) { console.warn("reloadBatches:", e?.message || e); }
+  }, [maybeExecuteAppBatch]);
+  useEffect(() => { reloadBatchesRef.current = reloadBatches; }, [reloadBatches]);
+  useEffect(() => { if (treasury) reloadBatchesRef.current?.(); }, [treasury]);
+
+  // Propose an N-of-M batch as an app-approval batch (no per-row Turnkey co-sign). Teammates approve
+  // once; when the threshold is met the proposer's client (this one) executes each row.
+  const startAppBatch = (inputRows, delivery) => {
+    if (delivery === "direct") { toast("Direct-to-wallet isn't supported under multi-sig — use Confidential Settlement", "error"); return; }
+    const rows = inputRows.map((r) => ({ address: r.address, amount: r.amount, label: r.label || null }));
+    run(`Propose batch of ${rows.length}`, async () => {
+      const cid = cfgRef.current.chainId;
+      const tok = tokenRef.current;
+      const token = { address: tok.address, symbol: tok.symbol, decimals: tok.decimals };
+      const rowsEnc = await Promise.all(rows.map(async (r) => ({ recipient: r.address, recipientLabel: r.label, amountEnc: await encryptAmount(r.amount, treasuryRef.current.elgamalPriv) })));
+      const batch = await api.createBatch({ delivery, chainId: cid, token, rows: rowsEnc });
+      const snap = { id: batch.id, kind: "app", delivery, willPropose: true, threshold: batch.threshold, approvals: batch.approvals || [], status: batch.status, token, chainId: cid, rows, progress: {}, running: false, done: false, startedAt: Date.now() };
+      setActiveBatch(snap); activeBatchRef.current = snap;
+      await reloadPayouts();
+      maybeExecuteAppBatch(); // in case threshold is already met
+      return batch;
+    }, { silent: true }).catch(() => {});
+  };
+
+  const approveAppBatch = (id) => run(`Approve batch`, async () => { await api.approveBatch(id); await reloadBatchesRef.current?.(); }, { silent: true });
+  const rejectAppBatch = (id) => run(`Reject batch`, async () => {
+    await api.rejectBatch(id);
+    if (activeBatchRef.current?.id === id) { const nb = { ...activeBatchRef.current, status: "rejected", done: true, running: false }; setActiveBatch(nb); activeBatchRef.current = nb; }
+    await reloadBatchesRef.current?.();
+  }, { silent: true });
+
   const startBatch = (inputRows, delivery) => {
     if (activeBatchRef.current?.running) return; // one batch at a time
     if (settlingRef.current) { toast("A previous operation is still settling onchain - please wait until it completes.", "error"); return; }
+    // N-of-M → APP-APPROVAL batch (Option A): teammates approve ONCE at the app layer, then the
+    // proposer's client executes each row 1-of-M via the backend root key. (The per-row Turnkey
+    // co-sign branch below is superseded and no longer reached at threshold > 1.)
+    if ((treasuryRef.current?.threshold || 1) > 1) { startAppBatch(inputRows, delivery); return; }
     const rows = inputRows.map((r) => ({ address: r.address, amount: r.amount, label: r.label || null }));
-    const willPropose = (treasuryRef.current?.threshold || 1) > 1;
+    const willPropose = false; // 1-of-M path only from here
     const id = `batch_${Date.now().toString(36)}`;
-    const snapshot = { id, delivery, willPropose, rows, progress: {}, running: true, done: false, startedAt: Date.now() };
+    const snapshot = { id, delivery, willPropose, kind: "solo", rows, progress: {}, running: true, done: false, startedAt: Date.now() };
     setActiveBatch(snapshot); activeBatchRef.current = snapshot;
 
     // Fire-and-forget: not awaited by any component, so unmounting BatchPayout can't stop it.
@@ -763,17 +898,17 @@ export function OrgProvider({ children }) {
     chainId, networks, network, switchNetwork,
     treasury, members, signerCount, role: treasury?.role || null, threshold: treasury?.threshold || 1,
     authed: sessionActive(), session: getSession(),
-    balances, nativeBalance, payouts, recipients, analytics, activeBatch, activeSend, settling,
+    balances, nativeBalance, payouts, recipients, analytics, activeBatch, appBatches, activeSend, settling,
     token, tokens, switchToken, addCustomToken, symbol: token?.symbol || "USDC", tokenDecimals: token?.decimals ?? 6, nativeSymbol: cfg?.nativeSymbol || "ETH",
     toasts, busy, busyDesc, toast,
     // auth
     createTreasury, beginOtp, completeOtp, completeGoogle, createOrgWithGoogle, logout,
     // treasury ops
-    activateTreasury, refreshBalances, depositToConfidential, claimPending, proposePayout, startSend, clearSend, startBatch, clearBatch, approveBatch, approvePayout, rejectPayout,
+    activateTreasury, refreshBalances, depositToConfidential, claimPending, proposePayout, startSend, clearSend, startBatch, clearBatch, approveBatch, approveAppBatch, rejectAppBatch, approvePayout, rejectPayout,
     // members
     addMember, removeMember, setThreshold, saveName, addRecipient, removeRecipient, isActivated,
     // reloads
-    reloadTreasury, reloadPayouts, reloadRecipients,
+    reloadTreasury, reloadPayouts, reloadRecipients, reloadBatches,
   };
   return <OrgCtx.Provider value={value}>{children}</OrgCtx.Provider>;
 }

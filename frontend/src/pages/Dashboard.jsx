@@ -7,7 +7,7 @@ import { short, fmtAmount, fmtUsd, fmtDate } from "../lib/format.js";
 
 export default function Dashboard() {
   const nav = useNavigate();
-  const { treasury, balances, nativeBalance, symbol, nativeSymbol, network, payouts, analytics, busy, threshold, signerCount, activateTreasury, depositToConfidential, claimPending, settling, refreshBalances, reloadPayouts } = useOrg();
+  const { treasury, balances, nativeBalance, symbol, nativeSymbol, network, payouts, appBatches, analytics, busy, threshold, signerCount, activateTreasury, depositToConfidential, claimPending, settling, refreshBalances, reloadPayouts } = useOrg();
   const settleVerb = settling && (settling.kind === "deposit" ? "deposited" : settling.kind === "transfer" ? "sent" : "claimed");
   const [depAmt, setDepAmt] = useState("100");
 
@@ -16,7 +16,7 @@ export default function Dashboard() {
   const hasConfidential = Number(balances.confidential.available) > 0;
   const needsFunding = !hasGas || (!hasToken && !hasConfidential);
   const recent = payouts.slice(0, 6);
-  const pending = payouts.filter((p) => p.status === "pending").length;
+  const pending = payouts.filter((p) => p.status === "pending").length + (appBatches || []).filter((b) => b.status === "pending_approval").length;
   const refreshAll = async () => { await reloadPayouts(); await refreshBalances(); };
 
   // Live getting-started guide — highlights the step you're on; each is clickable.
@@ -106,7 +106,6 @@ export default function Dashboard() {
 
         <div className="card" id="deposit-card">
           <h3>Load confidential balance</h3>
-          <p className="csub">Move public {symbol} into the treasury's confidential balance.</p>
           <label className="fld" style={{ marginTop: 12 }}>Token</label>
           <TokenSelect />
           <label className="fld" style={{ marginTop: 12 }}>Amount ({symbol})</label>
